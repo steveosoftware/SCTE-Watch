@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCTE-WATCH</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>SCTE-WATCH</h1>
+</header>
+<main>
+  <section class="panel" id="tester-panel">
+    <h2>HLS &amp; DASH Stream Tester</h2>
+    <div class="row">
+      <label for="tester-url">Stream URL</label>
+      <input id="tester-url" type="text" placeholder="https://example.com/master.m3u8 or .mpd">
+      <select id="tester-format">
+        <option value="auto">Auto-detect</option>
+        <option value="hls">Force HLS</option>
+        <option value="dash">Force DASH</option>
+      </select>
+      <button id="tester-load">Load &amp; Play</button>
+      <button id="tester-stop" class="secondary" disabled>Stop</button>
+    </div>
+    <div class="row">
+      <video id="tester-video" controls muted playsinline></video>
+    </div>
+    <div class="row stats-row">
+      <span class="stat"><label>Status</label><span id="tester-status">idle</span></span>
+      <span class="stat"><label>Bandwidth est.</label><span id="tester-bandwidth">–</span></span>
+      <span class="stat"><label>Current quality</label><span id="tester-quality">–</span></span>
+      <span class="stat"><label>Buffer</label><span id="tester-buffer">–</span></span>
+      <span class="stat"><label>Dropped frames</label><span id="tester-dropped">–</span></span>
+      <span class="stat"><label>Startup time</label><span id="tester-startup">–</span></span>
+    </div>
+    <table id="tester-variants" class="variants-table" hidden>
+      <thead><tr><th>#</th><th>Resolution</th><th>Bandwidth</th><th>Codecs</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <pre id="tester-log" class="log small"></pre>
+  </section>
+
+  <section class="panel" id="manifest-panel">
+    <h2>Manifest Inspector</h2>
+    <div class="row">
+      <label for="manifest-select">Showing</label>
+      <select id="manifest-select" disabled></select>
+      <label for="manifest-interval">Poll interval (s)</label>
+      <input id="manifest-interval" type="number" min="1" step="0.5" value="4">
+      <button id="manifest-download-btn" class="secondary">Download variant log</button>
+      <span id="manifest-status" class="status"></span>
+    </div>
+    <pre id="manifest-output" class="log"></pre>
+    <div class="row">
+      <label>SCTE-35 cues</label>
+      <button id="scte-download-btn" class="secondary">Download SCTE log</button>
+      <span class="note">Detects <span class="glossary-term" data-term="out-of-band SCTE-35">out-of-band</span> SCTE-35 only (manifest tags) — not <span class="glossary-term" data-term="in-band SCTE-35">in-band</span> cues muxed into the media segments.</span>
+      <span id="manifest-scte-status" class="status"></span>
+    </div>
+    <pre id="manifest-scte-output" class="log small"></pre>
+  </section>
+
+  <section class="panel" id="decode-panel">
+    <h2>Decode a SCTE-35 string</h2>
+    <div class="row">
+      <textarea id="decode-input" placeholder="Paste a base64 (/DAv...) or hex (0xFC30... / FC30...) SCTE-35 payload"></textarea>
+    </div>
+    <div class="row">
+      <button id="decode-btn" class="secondary">Decode</button>
+    </div>
+    <pre id="decode-output" class="log small"></pre>
+  </section>
+</main>
+<div id="glossary-modal" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <button id="glossary-modal-close" class="modal-close" type="button" aria-label="Close">&times;</button>
+    <h3 id="glossary-modal-term"></h3>
+    <p id="glossary-modal-def"></p>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dashjs@4/dist/dash.all.min.js"></script>
+<script type="module" src="stream-tester.js"></script>
+<script type="module" src="manifest-inspector.js"></script>
+<script type="module" src="app.js"></script>
+<script type="module" src="glossary-ui.js"></script>
+</body>
+</html>

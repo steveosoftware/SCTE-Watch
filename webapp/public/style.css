@@ -1,0 +1,259 @@
+* { box-sizing: border-box; }
+
+body {
+  background: #0e0f11;
+  color: #d7dadd;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin: 0;
+  padding: 0 1.5rem 2rem;
+}
+
+header h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin: 0;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid #24262b;
+}
+
+.panel {
+  margin-top: 1.5rem;
+  background: #16181b;
+  border: 1px solid #24262b;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.row label {
+  font-size: 0.85rem;
+  color: #9aa0a6;
+}
+
+.row label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+input[type="text"],
+input[type="number"],
+select,
+textarea {
+  background: #0e0f11;
+  border: 1px solid #2c2f34;
+  color: #e8eaed;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+#master-url {
+  flex: 1;
+  min-width: 280px;
+}
+
+#interval {
+  width: 5em;
+}
+
+textarea#decode-input {
+  width: 100%;
+  min-height: 5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+button {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+button:disabled {
+  background: #33363b;
+  color: #7a7d82;
+  cursor: not-allowed;
+}
+
+button#stop-btn {
+  background: #dc2626;
+}
+
+button.secondary {
+  background: #3a3d42;
+}
+
+.status {
+  color: #9aa0a6;
+  font-size: 0.85rem;
+}
+
+.note {
+  color: #9aa0a6;
+  font-size: 0.85rem;
+}
+
+.log {
+  background: #0a0b0c;
+  border: 1px solid #24262b;
+  border-radius: 6px;
+  padding: 0.75rem;
+  height: 22rem;
+  overflow: auto;
+  resize: vertical;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.log.small {
+  height: 8rem;
+  min-height: 4rem;
+}
+
+#manifest-scte-output {
+  height: 16rem;
+}
+
+#tester-video {
+  width: 100%;
+  max-width: 720px;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #000;
+  border-radius: 6px;
+}
+
+.stats-row {
+  gap: 1.5rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.stat label {
+  font-size: 0.75rem;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.stat span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+}
+
+.variants-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.variants-table th,
+.variants-table td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid #24262b;
+}
+
+.variants-table th {
+  color: #9aa0a6;
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+}
+
+.glossary-term {
+  color: #6ea8fe;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.glossary-term:hover {
+  color: #9dc2ff;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-overlay[hidden] {
+  display: none;
+}
+
+.modal-box {
+  position: relative;
+  background: #16181b;
+  border: 1px solid #24262b;
+  border-radius: 8px;
+  padding: 1.5rem;
+  max-width: 28rem;
+  width: calc(100% - 2rem);
+}
+
+.modal-box h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  color: #e8eaed;
+}
+
+.modal-box p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #b7bbc0;
+  line-height: 1.5;
+}
+
+.modal-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  color: #9aa0a6;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.25rem;
+}
