@@ -74,7 +74,8 @@ textarea {
   width: 5em;
 }
 
-textarea#decode-input {
+textarea#decode-input,
+textarea#vast-input {
   width: 100%;
   min-height: 5rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

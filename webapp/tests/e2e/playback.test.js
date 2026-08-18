@@ -136,6 +136,46 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  test("VAST validator: pasted raw InLine XML renders glossary-linked ad details", async () => {
+    const { page } = await newPage();
+    const vastInline = readFileSync(path.join(FIXTURES_DIR, "vast-inline.xml"), "utf8");
+    await page.goto(BASE_URL);
+    await page.fill("#vast-input", vastInline);
+    await page.click("#vast-btn");
+
+    await page.waitForFunction(() => document.getElementById("vast-status")?.textContent === "Validated.");
+    const outputText = await page.textContent("#vast-output");
+    assert.match(outputText, /ExampleAdServer/);
+    assert.match(outputText, /Example Linear Ad/);
+    assert.match(outputText, /00:00:30/);
+    assert.match(outputText, /creative_1280x720\.mp4/);
+
+    const termHtml = await page.$eval('#vast-output .glossary-term[data-term="InLine"]', (el) => el.outerHTML);
+    assert.match(termHtml, /class="glossary-term"/);
+
+    await page.close();
+  });
+
+  test("VAST validator: a Wrapper URL is fetched and followed to its InLine target through the real proxy", async () => {
+    const { page } = await newPage();
+    // Built inline (not the unit-test fixture) so its VASTAdTagURI points
+    // at this test's own fixture server rather than a fake external host —
+    // this test is specifically exercising the real fetch-and-follow path.
+    const wrapperXml = `<VAST version="4.0"><Ad id="1"><Wrapper><AdSystem>TestSSP</AdSystem><VASTAdTagURI><![CDATA[http://127.0.0.1:${FIXTURE_SERVER_PORT}/vast-inline.xml]]></VASTAdTagURI></Wrapper></Ad></VAST>`;
+    await page.goto(BASE_URL);
+    await page.fill("#vast-input", wrapperXml);
+    await page.click("#vast-btn");
+
+    await page.waitForFunction(() => document.getElementById("vast-status")?.textContent === "Validated.");
+    const outputText = await page.textContent("#vast-output");
+    assert.match(outputText, /2 hops/);
+    assert.match(outputText, /TestSSP/);
+    assert.match(outputText, /ExampleAdServer/, "must have followed the wrapper through to the real InLine ad");
+    assert.ok(!/wrapper chain did not resolve/.test(outputText), "must not report truncation on a chain that actually resolved");
+
+    await page.close();
+  });
+
   test("DASH out-of-band SCTE-35: EventStream signal is detected and decoded in the real UI", async () => {
     const { page } = await newPage();
     await page.goto(BASE_URL);

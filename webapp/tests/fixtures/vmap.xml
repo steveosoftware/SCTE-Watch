@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic — a preroll (ad tag reference) and a midroll (inline VAST
+     ad data) ad break, covering both AdSource variants VMAP allows. -->
+<vmap:VMAP xmlns:vmap="http://www.iab.net/videosuite/vmap" version="1.0">
+  <vmap:AdBreak breakType="linear" timeOffset="start" breakId="preroll-1">
+    <vmap:AdSource id="preroll-1-source" allowMultipleAds="false">
+      <vmap:AdTagURI templateType="vast4"><![CDATA[https://ssp.example.com/vast?pod=preroll]]></vmap:AdTagURI>
+    </vmap:AdSource>
+  </vmap:AdBreak>
+  <vmap:AdBreak breakType="linear" timeOffset="00:05:00.000" breakId="midroll-1">
+    <vmap:AdSource id="midroll-1-source" allowMultipleAds="false">
+      <vmap:VASTAdData>
+        <VAST version="4.0">
+          <Ad id="30001">
+            <InLine>
+              <AdSystem>ExampleAdServer</AdSystem>
+              <AdTitle>Midroll Inline Ad</AdTitle>
+              <Impression><![CDATA[https://track.example.com/impression?id=30001]]></Impression>
+              <Creatives>
+                <Creative>
+                  <Linear>
+                    <Duration>00:00:15</Duration>
+                    <MediaFiles>
+                      <MediaFile type="video/mp4" bitrate="1500" width="1280" height="720"><![CDATA[https://cdn.example.com/midroll_1280x720.mp4]]></MediaFile>
+                    </MediaFiles>
+                  </Linear>
+                </Creative>
+              </Creatives>
+            </InLine>
+          </Ad>
+        </VAST>
+      </vmap:VASTAdData>
+    </vmap:AdSource>
+  </vmap:AdBreak>
+</vmap:VMAP>

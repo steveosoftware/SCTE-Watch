@@ -128,6 +128,22 @@ export const GLOSSARY = {
   main: "Role value: this AdaptationSet is the primary program content, as opposed to an alternate/commentary/description track.",
   lang: "A BCP 47 language tag (e.g. en, es-419, fr-CA) on a DASH AdaptationSet identifying its language — the DASH equivalent of HLS's LANGUAGE attribute.",
 
+  // VAST / VMAP (video ad response) vocabulary
+  VAST: "Video Ad Serving Template — the IAB standard XML format ad servers use to describe a video ad: its media files, tracking pixels, and click-through URL.",
+  VMAP: "Video Multiple Ad Playlist — an IAB standard that wraps multiple VAST ad breaks together, describing where each occurs in the content (preroll/midroll/postroll) via timeOffset.",
+  InLine: "This VAST document contains the actual ad directly — creative, media files, tracking — as opposed to a Wrapper, which just points elsewhere.",
+  Wrapper: "This VAST document doesn't contain the actual ad — it just redirects to another VAST URL (VASTAdTagURI), often chained through several ad-tech vendors before reaching a real InLine ad.",
+  Linear: "A standard linear video ad — plays inline with the content, same as a TV commercial.",
+  Companion: "A companion ad — a banner/image shown alongside the video ad, not the video itself.",
+  NonLinear: "An overlay ad shown on top of playing video content, rather than pausing it.",
+  MediaFile: "One playable ad creative file — its URL, container/codec type, bitrate, and dimensions.",
+  Impression: "A tracking pixel the player must fire when the ad actually starts playing — proves the ad was served, used for billing/reporting.",
+  ClickThrough: "The URL to send the viewer to if they click the ad.",
+  ClickTracking: "A tracking pixel fired when the viewer clicks the ad, separate from where ClickThrough actually sends them.",
+  TrackingEvents: "A set of tracking pixels fired at specific playback milestones (start, firstQuartile, midpoint, thirdQuartile, complete, pause, skip, etc.) — how ad servers measure actual viewing, not just that a request was made.",
+  AdBreak: "A VMAP element describing one ad slot in the content — when it occurs (timeOffset) and what type (linear video, nonlinear overlay, display).",
+  AdSystem: "Identifies which ad server/platform generated this VAST response.",
+
   // hls.js ErrorTypes — the broad category each error falls under.
   networkError: "Something failed while fetching a manifest, segment, or key over the network — a download problem, not a decode problem.",
   mediaError: "The browser's Media Source Extensions (MSE) pipeline rejected or choked on data after it was downloaded — a decode/buffering problem, not a network problem.",

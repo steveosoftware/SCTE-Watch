@@ -84,6 +84,18 @@
     </div>
     <pre id="decode-output" class="log small"></pre>
   </section>
+
+  <section class="panel" id="vast-panel">
+    <h2>Validate a VAST/VMAP ad response</h2>
+    <div class="row">
+      <textarea id="vast-input" placeholder="Paste a VAST/VMAP URL, or raw VAST/VMAP XML"></textarea>
+    </div>
+    <div class="row">
+      <button id="vast-btn" class="secondary">Validate</button>
+      <span id="vast-status" class="status"></span>
+    </div>
+    <pre id="vast-output" class="log"></pre>
+  </section>
 </main>
 <div id="glossary-modal" class="modal-overlay" hidden>
   <div class="modal-box">
@@ -97,6 +109,7 @@
 <script type="module" src="stream-tester.js"></script>
 <script type="module" src="manifest-inspector.js"></script>
 <script type="module" src="app.js"></script>
+<script type="module" src="vast-ui.js"></script>
 <script type="module" src="glossary-ui.js"></script>
 </body>
 </html>

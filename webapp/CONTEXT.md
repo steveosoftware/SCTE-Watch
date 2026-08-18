@@ -47,7 +47,7 @@ webapp/
   cdn-chain.js            CNAME-chain walker only (DNS-only, no SSRF surface) — naming which CDN(s) moved to cdn-fingerprint.js
   package.json            devDependency: playwright (tests only); npm scripts: start/test/test:e2e
   public/
-    index.html            page shell, three panels + glossary modal
+    index.html            page shell, four panels + glossary modal
     style.css              all styling (dark theme, minimalist)
     scte35.js              SCTE-35 binary decoder + HLS/DASH manifest parsing (pure logic, DOM-free — runs under plain Node)
     glossary.js             term definitions (SCTE-35 + hls.js error types/details) + safe HTML-escaping/linking helpers
@@ -57,13 +57,15 @@ webapp/
     stream-tester.js         HLS/DASH playback via hls.js/dash.js, stats, variants table (now beside the video, not below it)
     manifest-inspector.js    live manifest polling + SCTE-35 cue log + health + DRM + CDN-chain status lines
     app.js                   standalone "decode a SCTE-35 string" panel
+    vast.js                  VAST/VMAP parsing + wrapper-chain resolution (pure logic, DOM-free, same style as scte35.js)
+    vast-ui.js               standalone "validate a VAST/VMAP ad response" panel
   tests/
-    fixtures/                committed HLS/DASH manifests + SCTE-35 payloads (real captures + labeled synthetic ones)
-    unit/                    node:test suites — one file roughly per scte35.js/glossary.js/net.js/ssrf-guard.js concern
+    fixtures/                committed HLS/DASH manifests + SCTE-35 payloads + VAST/VMAP fixtures (real captures + labeled synthetic ones)
+    unit/                    node:test suites — one file roughly per scte35.js/glossary.js/net.js/ssrf-guard.js/vast.js concern
     e2e/playback.test.js     real headless-Chromium tests against a real spawned server.js
 ```
 
-## The three panels (top to bottom on the page)
+## The four panels (top to bottom on the page)
 
 ### 1. HLS & DASH Stream Tester
 - URL input (auto-detects HLS vs DASH by extension, or force either), Load & Play / Stop.
@@ -97,6 +99,14 @@ webapp/
 ### 3. Decode a SCTE-35 string
 - Standalone: paste a base64 (`/DAv...`) or hex (`0xFC30...`) SCTE-35 payload, click Decode.
 - Unrelated to playback/polling — kept as-is per explicit request when the old "Watch an HLS stream" panel (redundant with the Manifest Inspector) was removed.
+
+### 4. Validate a VAST/VMAP ad response (shipped 2026-08-18, Phase 4)
+- Standalone, same pattern as the SCTE-35 decoder panel: paste a VAST/VMAP **URL or raw XML**, click Validate. Auto-detects which of the two it is by root element (`vast.js`'s `detectVastVmap()` — checked against the actual root, not a substring search, since a VMAP document's inline `VASTAdData` legitimately embeds a full nested `<VAST>` element).
+- URL input goes through the same hardened `/api/fetch` proxy as everything else (ad servers generally don't set CORS headers, same reasoning as the Manifest Inspector).
+- **Follows VAST Wrapper chains automatically** (`resolveVastChain()` in `vast.js`) — ad-tech responses are routinely chained through several vendors (SSP → exchange → creative) before reaching a real `InLine` ad. Capped at 5 hops (mirrors `cdn-chain.js`'s `resolveCnameChain()` maxHops pattern) so a misconfigured or malicious chain can't loop forever; a chain that doesn't resolve within the cap is flagged in the output rather than silently truncated.
+- **VMAP**: parses each `AdBreak` (type, `timeOffset`, id), then resolves its `AdSource` — either an inline `VASTAdData` (parsed directly) or an `AdTagURI` (fetched through the proxy) — following that ad break's own wrapper chain the same way a standalone VAST URL would.
+- Output shows the ad pod breakdown per the original ask: ad system, creative type (`Linear`/`Companion`/`NonLinear`), duration, media files (url/type/bitrate/dimensions), click-through/click-tracking, and which tracking events (start/quartiles/complete/etc.) are wired up — glossary-linked the same way manifest output is (`glossaryTerm()` on fixed vocabulary only — ad server content is at least as untrusted as CDN manifest content, same XSS-safety invariant).
+- `vast.js` is pure/DOM-free (regex against XML text, same style as `scte35.js`'s DASH parsing) — no `DOMParser` dependency, runs under plain Node for tests.
 
 ## Click-to-glossary feature
 

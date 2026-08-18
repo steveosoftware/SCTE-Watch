@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic — a single-hop Wrapper pointing at vast-inline.xml, for
+     exercising resolveVastChain()'s wrapper-following. -->
+<VAST version="4.0">
+  <Ad id="10001">
+    <Wrapper>
+      <AdSystem>ExampleSSP</AdSystem>
+      <VASTAdTagURI><![CDATA[https://ssp.example.com/vast?id=10001]]></VASTAdTagURI>
+      <Impression><![CDATA[https://track.example.com/ssp-impression?id=10001]]></Impression>
+    </Wrapper>
+  </Ad>
+</VAST>

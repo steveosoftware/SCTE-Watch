@@ -18,7 +18,7 @@ Update this alongside `CONTEXT.md` as items land.
 2. ~~**Phase 1 — client-side only.**~~ **Done** (2026-08-16).
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
-5. **Phase 4 — server-dependent features.** Not started. ccextractor, in-band SCTE-35, VAST fetch.
+5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
 6. **Blocked** — Gracenote, pending credentials (explicitly deferred by operator, 2026-08-18 — revisit once the API query shape/credentials show up).
 
 ---
@@ -82,9 +82,16 @@ Blocks: ccextractor captions, in-band SCTE-35 (if it needs native tools), the Gr
 
 ## Phase 4 — Server-dependent features
 
-### VAST / VMAP validator
+### VAST / VMAP validator ✅ Done (2026-08-18)
 
-New standalone panel (same pattern as the SCTE-35 string decoder — paste input, get structured output), closing the loop from "cue detected" to "ad response validated." Paste a VAST/VMAP URL or raw XML; validate structure; show the ad pod breakdown (ad system, creative, duration, tracking pixels). URL input needs the fetch proxy (ad servers generally don't set CORS headers), so it rides on the same hardened endpoint.
+New standalone panel (same pattern as the SCTE-35 string decoder — paste input, get structured output), closing the loop from "cue detected" to "ad response validated." Paste a VAST/VMAP URL or raw XML; validates structure; shows the ad pod breakdown (ad system, creative, duration, media files, tracking pixels). URL input rides on the same hardened `/api/fetch` proxy as everything else (ad servers generally don't set CORS headers).
+
+- `public/vast.js` — pure/DOM-free parsing (regex against XML text, same style as `scte35.js`'s DASH parsing, no `DOMParser`), `public/vast-ui.js` — the panel wiring/rendering.
+- **Follows VAST Wrapper chains** (`resolveVastChain()`), capped at 5 hops — real ad responses are routinely chained through several vendors before reaching an actual `InLine` ad; a chain that doesn't resolve within the cap is flagged, not silently dropped.
+- **VMAP** ad breaks resolve their `AdSource` (inline `VASTAdData` or a fetched `AdTagURI`) and follow that break's own wrapper chain the same way a standalone VAST URL does.
+- Output is glossary-linked (`AdSystem`, `InLine`/`Wrapper`, `Linear`/`Companion`/`NonLinear`, `MediaFile`, `Impression`, `ClickThrough`/`ClickTracking`, `TrackingEvents`, `VMAP`/`AdBreak`) — same XSS-safety invariant as the rest of `glossary.js`: only fixed vocabulary ever gets wrapped, never the free-text/URL content ad servers actually control.
+- Tested: 15 new unit tests (`tests/unit/vast.test.js`, synthetic fixtures — no real ad server captured) plus 2 new e2e tests in `tests/e2e/playback.test.js`'s offline tier (pasted raw XML, and a real proxy fetch following a Wrapper to its InLine target against a local fixture server).
+- Not built: full Companion/NonLinear creative detail (type detection only — nothing in this app renders a companion banner, so there was no reason to parse its dimensions/asset URL yet).
 
 ### Captions via ccextractor
 
