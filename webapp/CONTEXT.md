@@ -6,7 +6,9 @@ No AI/Claude/Anthropic branding anywhere in this project — keep it that way (n
 
 ## Repo state
 
-Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (initial commit), `staging` (tracks `origin/staging`, created 2026-08-15), and `roadmap` (tracks `origin/roadmap`, branched off `staging` 2026-08-16 — **this is the active working branch** as of 2026-08-18; Phases 0–2 of ROADMAP.md plus the CDN-fingerprint rework and hls.js error glossary all landed here). As of 2026-08-18 there are uncommitted changes on `roadmap` — check `git status` before assuming HEAD reflects everything described below.
+Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (still just the initial commit — stale, not what's deployed), `staging` (tracks `origin/staging`, fast-forwarded to match `roadmap` as of 2026-08-18), and `roadmap` (tracks `origin/roadmap` — **this is the active working branch**; Phases 0–3 of ROADMAP.md all landed here). Working tree is clean as of 2026-08-18.
+
+**Live deploy**: https://roadmap.d3qk02ponpvf7m.amplifyapp.com/ — Amplify app `SCTE-Watch` (`d3qk02ponpvf7m`, `us-east-1`), branch `roadmap`, no password gate yet (see Phase 3 notes in ROADMAP.md — the endpoints are public and unauthenticated right now).
 
 Future planning/scoping lives in `ROADMAP.md` alongside this file — check it before proposing new features, since scope decisions (what's explicitly excluded, what's blocked on external info, what needs the AWS Amplify migration first) are recorded there rather than re-litigated per conversation.
 
@@ -38,7 +40,9 @@ See ROADMAP.md Phase 0 for what each suite covers.
 ```
 scte35watch.py           original CLI script (predates the web app; not touched — fate undecided, see ROADMAP.md)
 webapp/
-  server.js              static file server + CORS proxy (/api/fetch, SSRF-guarded, now also returns CDN-relevant response headers) + DNS chain endpoint (/api/dns-chain)
+  server.js              static file server + thin node:http wrapper around api-handlers.js (local dev only — not what's deployed)
+  api-handlers.js         pure request logic for /api/fetch and /api/dns-chain — {status, body} in, no transport awareness. Shared by server.js (local) and lambda/handler.js (deployed)
+  lambda/handler.js        AWS Lambda entrypoint — same api-handlers.js logic, wrapped for API Gateway's event/response shape instead of node:http
   ssrf-guard.js           IP-range blocking + guarded-redirect fetch + response-size cap for the proxy
   cdn-chain.js            CNAME-chain walker only (DNS-only, no SSRF surface) — naming which CDN(s) moved to cdn-fingerprint.js
   package.json            devDependency: playwright (tests only); npm scripts: start/test/test:e2e
@@ -102,7 +106,7 @@ Any recognized SCTE-35/HLS term in decoded output (splice command names, segment
 
 ## Hosting target
 
-Intended to be deployed on AWS Amplify. Current architecture (a persistent `http.createServer` process in `server.js`) doesn't map directly onto Amplify Hosting's model (static output + optional framework SSR compute) — the `/api/fetch` proxy and any future server-side work (ccextractor, in-band demux, Gracenote, VAST fetch) will need to become Amplify Functions (Lambda) instead. Full reasoning in `ROADMAP.md` under "Infrastructure prerequisite." Not yet started.
+**Deployed** on AWS Amplify (2026-08-18). `webapp/public/` is served as static Amplify Hosting output (build spec: `baseDirectory: webapp/public`, no build step). `/api/fetch` and `/api/dns-chain` run as an AWS Lambda (`scte-watch-api`, `us-east-1`) behind an API Gateway HTTP API, reached through an Amplify rewrite rule (`/api/<*>` → the API Gateway URL, status 200) so the client's same-origin `fetch("/api/...")` calls work unchanged — no CORS, no code path difference between local dev and deployed. See ROADMAP.md Phase 3 for the exact resources and their ARNs/IDs.
 
 ## Known/verified behavior
 

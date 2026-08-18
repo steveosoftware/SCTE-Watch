@@ -16,10 +16,10 @@ Update this alongside `CONTEXT.md` as items land.
 
 1. ~~**Phase 0 — testing foundation.**~~ **Done** (2026-08-16).
 2. ~~**Phase 1 — client-side only.**~~ **Done** (2026-08-16).
-3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, but re-verify after Phase 3 (a Lambda's network position differs from this laptop's).
-4. **Phase 3 — Amplify migration.** Not started. Unblocks everything server-side below.
+3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
+4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
 5. **Phase 4 — server-dependent features.** Not started. ccextractor, in-band SCTE-35, VAST fetch.
-6. **Blocked** — Gracenote, pending credentials.
+6. **Blocked** — Gracenote, pending credentials (explicitly deferred by operator, 2026-08-18 — revisit once the API query shape/credentials show up).
 
 ---
 
@@ -57,17 +57,25 @@ All shipped in `scte35.js` (pure, portable — still runs under plain Node, no D
 
 ---
 
-## Phase 3 — AWS Amplify hosting migration
+## Phase 3 — AWS Amplify hosting migration ✅ Done
 
-Blocks: ccextractor captions, in-band SCTE-35 (if it needs native tools), the Gracenote proxy, and likely the VAST/VMAP fetch.
+Blocks: ccextractor captions, in-band SCTE-35 (if it needs native tools), the Gracenote proxy, and likely the VAST/VMAP fetch. **All of those still not started** — this phase only unblocked them.
 
-`server.js` today is a persistent `http.createServer` process — that model doesn't map onto Amplify Hosting, which serves static output (our `public/` directory is a perfect fit as-is) plus optional SSR compute for specific supported frameworks. It does not run an arbitrary always-on custom server.
+`server.js` was a persistent `http.createServer` process, which doesn't map onto Amplify Hosting (static output + optional framework SSR compute, no arbitrary always-on custom server). Split the concerns:
 
-Everything server-side becomes an **Amplify Function** (AWS Lambda):
-- `/api/fetch` (the CORS proxy, hardened per Phase 2 — re-verify the DNS-rebinding gap above in this environment specifically) → a Lambda behind an API route.
-- Native-tool work (ccextractor, in-band demuxing) → a Lambda with the binary bundled as a Lambda Layer (compiled for the target architecture — x86_64 or arm64/Graviton), downloading segments into `/tmp`, shelling out, returning results.
-- Constraints to design around: deployment package/layer size limits, `/tmp` is ephemeral and size-capped, execution time is capped (fine for "grab 1–2 segments," not for anything long-running), and cold-start latency on infrequently-hit routes.
-- Add auth/rate limiting on the expensive endpoints here (see Phase 2's "not done").
+- **Static site**: `webapp/public/` served as-is by Amplify Hosting. Build spec: `baseDirectory: webapp/public`, no build commands (there's nothing to build — still plain `<script>` tags, no bundler).
+- **`/api/fetch` and `/api/dns-chain`**: pulled the request-handling logic out of `server.js` into `webapp/api-handlers.js` — pure functions (`handleFetchRequest`, `handleDnsChainRequest`) that take plain args and return `{status, body}`, no transport awareness. `server.js` now just calls into it for local dev; `webapp/lambda/handler.js` is the same logic wrapped for API Gateway's event/response shape. Zero code duplication, zero behavior drift between local and deployed — same SSRF guard, same everything, verified by the same test suite (`tests/unit/api-handlers.test.js`, new).
+- **Deployed as a hand-rolled Lambda + API Gateway HTTP API**, not the full Amplify Gen 2 (`@aws-amplify/backend`/CDK) toolchain — deliberate, to match this project's zero-runtime-dependency ethos (`server.js` itself has always used only Node built-ins). The Lambda's own zip has no npm dependencies either — `ssrf-guard.js`/`cdn-chain.js`/`api-handlers.js` were already pure Node (`node:dns`, `node:net`, built-in `fetch`), so nothing new was needed.
+- **Deployed resources** (`us-east-1`, account `288975517126`):
+  - IAM role `scte-watch-api-lambda-role` — trust policy scoped to `lambda.amazonaws.com` only, one attached managed policy (`AWSLambdaBasicExecutionRole` — CloudWatch Logs write, nothing else).
+  - Lambda `scte-watch-api` (Node.js 20.x, 256MB, 25s timeout).
+  - API Gateway HTTP API `kncmoavpw9` (`https://kncmoavpw9.execute-api.us-east-1.amazonaws.com`), routes `GET /api/fetch` and `GET /api/dns-chain`, `AWS_PROXY` integration to the Lambda, `$default` auto-deploy stage.
+  - Amplify app custom rule: `/api/<*>` → the API Gateway URL, status `200` (a rewrite, not a redirect — keeps the client's `fetch("/api/...")` calls same-origin, so `net.js` needed zero changes and CORS never enters the picture).
+- Verified end-to-end against the live URL: SSRF guard blocks `169.254.169.254` and other private ranges through the deployed Lambda exactly as it does locally, and a real DASH manifest (`dash.akamaized.net`) fetches successfully through the guarded proxy.
+- **Not done, now more urgent than when this was theoretical**: auth/rate limiting on `/api/fetch` and `/api/dns-chain` (see Phase 2's "not done") — these are live, public, unauthenticated endpoints on the internet now, not endpoints on a laptop bound to `127.0.0.1`. Operator's stated plan is an Amplify-level password gate (Amplify Hosting supports basic auth per-branch) as a stopgap; not yet turned on.
+- **DNS-rebinding gap** (documented in `ssrf-guard.js` since Phase 2): still open, now running in the actual public environment the gap matters for. Same caveat as before — the resolved IP is validated but not pinned to the TCP connection.
+- **Native-tool work (ccextractor, in-band demux) is NOT built yet** — Phase 3 only proves the Lambda deployment path works for pure-JS handlers. A Lambda Layer with a bundled binary, `/tmp` staging, and the packaging concerns below are still Phase 4 work.
+- Constraints to design around for Phase 4 specifically: deployment package/layer size limits, `/tmp` is ephemeral and size-capped, execution time is capped (fine for "grab 1–2 segments," not for anything long-running), and cold-start latency on infrequently-hit routes.
 
 ---
 
