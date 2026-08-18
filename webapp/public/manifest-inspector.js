@@ -125,9 +125,16 @@ function updateScteCues(text) {
   if (currentFormat === "dash") return updateScteCuesDash(text);
 }
 
+// Renders the raw manifest with known vocabulary (SCTE cue tags,
+// EXT-X-MEDIA/subtitle/caption/language attributes, DASH Role/Accessibility)
+// linked to their glossary definitions — the same treatment the SCTE cue
+// log already gets. outputEl.textContent still reads back the original
+// unwrapped text afterwards (glossaryTerm only ever wraps existing
+// substrings, never adds characters), so the unchanged-check and the
+// "download manifest" button both keep working against the raw text.
 function render(text) {
   if (outputEl.textContent === text) return;
-  outputEl.textContent = text;
+  outputEl.innerHTML = text.split("\n").map(linkifyTagLine).join("\n");
   updateScteCues(text);
 }
 

@@ -72,3 +72,57 @@ describe("linkifyTagLine", () => {
     assert.equal(html, escapeHtml(`<b>not a tag</b>`));
   });
 });
+
+describe("linkifyTagLine — EXT-X-MEDIA captions/subtitles/language", () => {
+  test("links the EXT-X-MEDIA tag itself", () => {
+    const html = linkifyTagLine(`#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="English",LANGUAGE="en",URI="subs_en.m3u8"`);
+    assert.match(html, /^#<span class="glossary-term" data-term="EXT-X-MEDIA">EXT-X-MEDIA<\/span>/);
+  });
+
+  test("links TYPE=SUBTITLES to its own definition, distinct from the tag", () => {
+    const html = linkifyTagLine(`#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",LANGUAGE="en",URI="subs_en.m3u8"`);
+    assert.match(html, /TYPE=<span class="glossary-term" data-term="SUBTITLES">SUBTITLES<\/span>/);
+  });
+
+  test("links TYPE=CLOSED-CAPTIONS and INSTREAM-ID for embedded captions", () => {
+    const html = linkifyTagLine(`#EXT-X-MEDIA:TYPE=CLOSED-CAPTIONS,GROUP-ID="cc",LANGUAGE="es",INSTREAM-ID="CC1"`);
+    assert.match(html, /TYPE=<span class="glossary-term" data-term="CLOSED-CAPTIONS">CLOSED-CAPTIONS<\/span>/);
+    assert.match(html, /<span class="glossary-term" data-term="INSTREAM-ID">INSTREAM-ID<\/span>=&quot;CC1&quot;/);
+  });
+
+  test("links the LANGUAGE attribute name but leaves the language code itself as plain text", () => {
+    const html = linkifyTagLine(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",LANGUAGE="es-419",URI="aud_es.m3u8"`);
+    assert.match(html, /<span class="glossary-term" data-term="LANGUAGE">LANGUAGE<\/span>=&quot;es-419&quot;/);
+    assert.ok(!html.includes('data-term="es-419"'), "the language code itself must not be wrapped as a glossary term");
+  });
+
+  test("does not confuse ASSOC-LANGUAGE with LANGUAGE", () => {
+    const html = linkifyTagLine(`#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",LANGUAGE="en",ASSOC-LANGUAGE="es"`);
+    assert.match(html, /<span class="glossary-term" data-term="ASSOC-LANGUAGE">ASSOC-LANGUAGE<\/span>=&quot;es&quot;/);
+  });
+});
+
+describe("linkifyTagLine — DASH Role/Accessibility/lang", () => {
+  test("links the Role element and its subtitle value", () => {
+    const html = linkifyTagLine(`  <Role schemeIdUri="urn:mpeg:dash:role:2011" value="subtitle"/>`);
+    assert.match(html, /&lt;<span class="glossary-term" data-term="Role">Role<\/span>/);
+    assert.match(html, /value=&quot;<span class="glossary-term" data-term="subtitle">subtitle<\/span>&quot;/);
+  });
+
+  test("links the Accessibility element for embedded captions signaling", () => {
+    const html = linkifyTagLine(`  <Accessibility schemeIdUri="urn:scte:dash:cc:cea-608:2015" value="CC1=eng"/>`);
+    assert.match(html, /&lt;<span class="glossary-term" data-term="Accessibility">Accessibility<\/span>/);
+  });
+
+  test("links the lang attribute name but leaves the language code as plain text", () => {
+    const html = linkifyTagLine(`  <AdaptationSet contentType="text" lang="fr-CA">`);
+    assert.match(html, /<span class="glossary-term" data-term="lang">lang<\/span>=&quot;fr-CA&quot;/);
+    assert.ok(!html.includes('data-term="fr-CA"'), "the language code itself must not be wrapped as a glossary term");
+  });
+
+  test("SECURITY: attacker content inside a Role-like line is still just escaped, not executed", () => {
+    const html = linkifyTagLine(`  <Role value="subtitle"><script>alert(1)</script>`);
+    assert.ok(!html.includes("<script>"), "must not pass through a raw script tag");
+    assert.ok(html.includes("&lt;script&gt;"), "the escaped form of the payload must be present");
+  });
+});

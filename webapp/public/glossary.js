@@ -100,6 +100,34 @@ export const GLOSSARY = {
   "EXT-X-DATERANGE": "The standard HLS tag for signaling a time range — most modern SCTE-35-in-HLS signaling rides on its SCTE35-OUT/SCTE35-IN/SCTE35-CMD attributes.",
   "EXT-X-ASSET": "Carries asset metadata (e.g. an ad break's ID) associated with a cue, used by some ad-insertion workflows.",
 
+  // HLS EXT-X-MEDIA — alternate renditions (alternate audio, sidecar
+  // subtitles, embedded closed captions). Not SCTE-35-related, but the
+  // most common thing people staring at a raw manifest need explained.
+  "EXT-X-MEDIA": "Declares an alternate rendition of the content — an alternate audio track, sidecar subtitles, or embedded closed captions — associated with a group of video variants via GROUP-ID. This is the tag that carries language info for anything other than the main video.",
+  SUBTITLES: "TYPE=SUBTITLES: full sidecar subtitle text, delivered as its own separate playlist and segments (usually WebVTT) — not embedded in the video. Different from CLOSED-CAPTIONS, which rides inside the video segments themselves.",
+  "CLOSED-CAPTIONS": "TYPE=CLOSED-CAPTIONS: captions embedded directly inside the video segments (CEA-608/708), not delivered as separate files. INSTREAM-ID says which embedded channel this rendition refers to.",
+  AUDIO: "TYPE=AUDIO: an alternate audio rendition — e.g. a different language dub or a commentary track — delivered as its own playlist and segments, selected the same way as an alternate subtitle track.",
+  VIDEO: "TYPE=VIDEO: an alternate video rendition. Rare in practice — most HLS streams list their video quality levels via EXT-X-STREAM-INF instead, not as EXT-X-MEDIA renditions.",
+  LANGUAGE: "A BCP 47 / RFC 5646 language tag (e.g. en, es-419, fr-CA) identifying the primary language of this rendition.",
+  "ASSOC-LANGUAGE": "A second, associated language for this rendition beyond its primary LANGUAGE — e.g. a track that's genuinely mixed-language.",
+  "INSTREAM-ID": "For embedded CLOSED-CAPTIONS only — selects which embedded CEA-608 channel (CC1-CC4) or CEA-708 service (SERVICE1-63) this rendition refers to, since captions for several languages can be multiplexed into the same video segments.",
+  AUTOSELECT: "Tells the player it's reasonable to automatically enable this rendition based on the viewer's system language/accessibility settings, without them explicitly picking it.",
+  DEFAULT: "Marks this as the rendition a player should enable automatically if it isn't applying any other selection logic.",
+  FORCED: "Subtitles only: marks a track that should display even when the viewer has subtitles turned off — used for burned-in-style translation of foreign-language dialogue, not general accessibility captioning.",
+  "GROUP-ID": "Groups this alternate rendition with the video variants (in EXT-X-STREAM-INF) that reference the same GROUP-ID — how the player knows which audio/subtitle/caption options belong with which quality level.",
+  CHARACTERISTICS: "Accessibility/content-nature hints (e.g. public.accessibility.describes-video) describing what a rendition is for, beyond just its language.",
+
+  // DASH equivalents — captions/subtitles/language signaling
+  Role: "Labels what a DASH AdaptationSet is for — main content, subtitle, caption, commentary, dub, description (audio description), etc. — via its value attribute.",
+  Accessibility: "Flags a DASH AdaptationSet as serving an accessibility purpose — e.g. CEA-608/708 closed captions embedded in the stream, or audio description — via a schemeIdUri identifying the accessibility type.",
+  subtitle: "Role value: this AdaptationSet carries sidecar subtitle text, not captions embedded in the video.",
+  caption: "Role value: this AdaptationSet carries captions intended for viewers who can't hear the audio — as opposed to a foreign-language subtitle translation.",
+  description: "Role value: this AdaptationSet is an audio description track — a narrated description of on-screen action for blind/low-vision viewers.",
+  commentary: "Role value: this AdaptationSet is a commentary track, not the main program audio.",
+  dub: "Role value: this AdaptationSet is a dubbed-language version of the main audio.",
+  main: "Role value: this AdaptationSet is the primary program content, as opposed to an alternate/commentary/description track.",
+  lang: "A BCP 47 language tag (e.g. en, es-419, fr-CA) on a DASH AdaptationSet identifying its language — the DASH equivalent of HLS's LANGUAGE attribute.",
+
   // hls.js ErrorTypes — the broad category each error falls under.
   networkError: "Something failed while fetching a manifest, segment, or key over the network — a download problem, not a decode problem.",
   mediaError: "The browser's Media Source Extensions (MSE) pipeline rejected or choked on data after it was downloaded — a decode/buffering problem, not a network problem.",
@@ -195,16 +223,47 @@ const HLS_TAG_NAMES = [
   "EXT-X-SCTE35",
   "EXT-X-DATERANGE",
   "EXT-X-ASSET",
+  "EXT-X-MEDIA",
 ].sort((a, b) => b.length - a.length);
 
-// Escapes an HLS playlist tag line, linkifying only the leading "#TAG-NAME"
-// token against the fixed whitelist above — never the attribute values that
-// follow, which come straight from the (untrusted) manifest.
+// Wraps known fixed vocabulary found *inside* a line — HLS EXT-X-MEDIA's
+// TYPE enum and attribute names, plus DASH's Role/Accessibility elements
+// and lang attribute — against text that has ALREADY been through
+// escapeHtml(). Safe because every token matched here is plain ASCII
+// (letters/hyphens/"="), which escapeHtml leaves byte-for-byte unchanged,
+// so this never runs against raw untrusted markup — only ever against
+// already-inert text, in which it can only find (and wrap) the exact fixed
+// strings it's looking for.
+function linkifyInlineTokens(escapedText) {
+  return escapedText
+    // HLS EXT-X-MEDIA TYPE=... (unquoted enumerated-string per spec)
+    .replace(/\bTYPE=(SUBTITLES|CLOSED-CAPTIONS|AUDIO|VIDEO)\b/g, (m, val) => `TYPE=${glossaryTerm(val)}`)
+    // HLS EXT-X-MEDIA attribute names — value (quoted or not) is left alone
+    .replace(
+      /\b(LANGUAGE|ASSOC-LANGUAGE|INSTREAM-ID|AUTOSELECT|DEFAULT|FORCED|GROUP-ID|CHARACTERISTICS)=/g,
+      (m, name) => `${glossaryTerm(name)}=`
+    )
+    // DASH element names (escaped "<" is "&lt;")
+    .replace(/&lt;(Role|Accessibility)\b/g, (m, el) => `&lt;${glossaryTerm(el)}`)
+    // DASH Role value="..." (escaped quotes are "&quot;")
+    .replace(
+      /value=&quot;(subtitle|caption|description|commentary|dub|main)&quot;/g,
+      (m, val) => `value=&quot;${glossaryTerm(val)}&quot;`
+    )
+    // DASH lang="..." attribute name — value is left alone
+    .replace(/\blang=(?=&quot;)/g, () => `${glossaryTerm("lang")}=`);
+}
+
+// Escapes a manifest line (HLS tag line or DASH XML line), linkifying the
+// leading "#TAG-NAME" token against the fixed whitelist above when present,
+// plus any inline vocabulary from linkifyInlineTokens — never the
+// attribute/attacker-controlled values themselves, which stay inert
+// escaped text throughout.
 export function linkifyTagLine(line) {
   for (const tag of HLS_TAG_NAMES) {
     if (line.startsWith(`#${tag}`)) {
-      return `#${glossaryTerm(tag)}${escapeHtml(line.slice(1 + tag.length))}`;
+      return `#${glossaryTerm(tag)}${linkifyInlineTokens(escapeHtml(line.slice(1 + tag.length)))}`;
     }
   }
-  return escapeHtml(line);
+  return linkifyInlineTokens(escapeHtml(line));
 }
