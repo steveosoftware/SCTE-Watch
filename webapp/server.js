@@ -9,6 +9,8 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchWithGuardedRedirects, readTextCapped, MAX_RESPONSE_BYTES, ProxyBlockedError } from "./ssrf-guard.js";
+import { resolveCnameChain } from "./cdn-chain.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -32,6 +34,35 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
+// Curated allowlist of response headers relevant to identifying which
+// CDN(s) served a response (see public/cdn-fingerprint.js) — deliberately
+// not forwarding the full header set to the client.
+const CDN_RELEVANT_HEADERS = [
+  "via",
+  "server",
+  "x-cache",
+  "x-amz-cf-id",
+  "x-amz-cf-pop",
+  "cf-ray",
+  "x-served-by",
+  "x-fastly-request-id",
+  "x-akamai-transformed",
+  "akamai-x-cache-on",
+  "x-azure-ref",
+  "x-msedge-ref",
+  "x-llnw-edge-status",
+  "x-varnish",
+];
+
+function pickCdnHeaders(headers) {
+  const out = {};
+  for (const name of CDN_RELEVANT_HEADERS) {
+    const v = headers.get(name);
+    if (v) out[name] = v;
+  }
+  return out;
+}
+
 async function handleFetch(req, res, urlObj) {
   const target = urlObj.searchParams.get("url");
   if (!target) return sendJson(res, 400, { error: "missing url param" });
@@ -42,25 +73,30 @@ async function handleFetch(req, res, urlObj) {
   } catch {
     return sendJson(res, 400, { error: "invalid url" });
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return sendJson(res, 400, { error: "only http/https urls are allowed" });
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const r = await fetch(parsed, {
-      headers: { "User-Agent": UA },
-      redirect: "follow",
-      signal: controller.signal,
-    });
-    const text = await r.text();
+    const r = await fetchWithGuardedRedirects(parsed, { userAgent: UA });
+    const text = await readTextCapped(r, MAX_RESPONSE_BYTES);
     if (!r.ok) return sendJson(res, 502, { error: `upstream HTTP ${r.status}` });
-    sendJson(res, 200, { text, finalUrl: r.url });
+    sendJson(res, 200, { text, finalUrl: r.url, headers: pickCdnHeaders(r.headers) });
+  } catch (e) {
+    if (e instanceof ProxyBlockedError) return sendJson(res, 400, { error: e.message });
+    sendJson(res, 502, { error: String(e.message || e) });
+  }
+}
+
+const HOSTNAME_RE = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
+
+async function handleDnsChain(req, res, urlObj) {
+  const hostname = urlObj.searchParams.get("hostname");
+  if (!hostname) return sendJson(res, 400, { error: "missing hostname param" });
+  if (hostname.length > 253 || !HOSTNAME_RE.test(hostname)) {
+    return sendJson(res, 400, { error: "invalid hostname" });
+  }
+  try {
+    const chain = await resolveCnameChain(hostname);
+    sendJson(res, 200, { chain });
   } catch (e) {
     sendJson(res, 502, { error: String(e.message || e) });
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -90,6 +126,7 @@ const server = http.createServer((req, res) => {
     return res.end("bad request");
   }
   if (urlObj.pathname === "/api/fetch" && req.method === "GET") return handleFetch(req, res, urlObj);
+  if (urlObj.pathname === "/api/dns-chain" && req.method === "GET") return handleDnsChain(req, res, urlObj);
   return serveStatic(req, res, urlObj.pathname);
 });
 

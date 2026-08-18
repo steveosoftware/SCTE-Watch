@@ -99,6 +99,72 @@ export const GLOSSARY = {
   "EXT-X-SCTE35": "Carries a raw SCTE-35 payload (base64 or hex) directly in the playlist, tied to a splice point.",
   "EXT-X-DATERANGE": "The standard HLS tag for signaling a time range — most modern SCTE-35-in-HLS signaling rides on its SCTE35-OUT/SCTE35-IN/SCTE35-CMD attributes.",
   "EXT-X-ASSET": "Carries asset metadata (e.g. an ad break's ID) associated with a cue, used by some ad-insertion workflows.",
+
+  // hls.js ErrorTypes — the broad category each error falls under.
+  networkError: "Something failed while fetching a manifest, segment, or key over the network — a download problem, not a decode problem.",
+  mediaError: "The browser's Media Source Extensions (MSE) pipeline rejected or choked on data after it was downloaded — a decode/buffering problem, not a network problem.",
+  keySystemError: "An EME/DRM operation failed — acquiring a license, updating a session, or the CDM itself refused something.",
+  muxError: "hls.js's own remuxer (repackaging the downloaded segment into something MSE accepts) failed.",
+  otherError: "Doesn't fit the other categories — often an internal error or a problem attaching to the <video> element itself.",
+
+  // hls.js ErrorDetails — manifest/level/track loading.
+  manifestLoadError: "The master/media playlist itself failed to download (network failure, DNS, CORS, or a non-2xx HTTP status).",
+  manifestLoadTimeOut: "The playlist request took too long and hls.js gave up waiting.",
+  manifestParsingError: "The playlist downloaded fine but isn't valid HLS — malformed tags, wrong content, or not an .m3u8 at all.",
+  manifestIncompatibleCodecsError: "Every variant in the playlist declares a codec this browser can't play — the manifest is fine, the codec choice isn't.",
+  levelEmptyError: "A rendition's playlist was parsed but contains zero usable segments.",
+  playlistUnchangedError: "A live playlist hasn't changed across several consecutive refreshes — the origin may have stalled.",
+  levelLoadError: "A specific rendition's (variant's) media playlist failed to download.",
+  levelLoadTimeOut: "A specific rendition's media playlist request timed out.",
+  levelParsingError: "A specific rendition's media playlist downloaded but isn't valid HLS syntax.",
+  levelSwitchError: "Switching to a different quality rendition failed partway through.",
+  audioTrackLoadError: "An alternate audio track's playlist failed to download.",
+  audioTrackLoadTimeOut: "An alternate audio track's playlist request timed out.",
+  subtitleTrackLoadError: "A subtitle track's playlist failed to download.",
+  subtitleTrackLoadTimeOut: "A subtitle track's playlist request timed out.",
+
+  // hls.js ErrorDetails — segment/key loading.
+  fragLoadError: "A media segment failed to download.",
+  fragLoadTimeOut: "A media segment request took too long and was abandoned.",
+  fragDecryptError: "An encrypted segment downloaded fine but failed to decrypt (bad key, wrong IV, or a corrupted segment).",
+  fragParsingError: "A segment downloaded but its contents are corrupt or don't match what the container format expects.",
+  fragGap: "hls.js skipped a segment because the playlist explicitly marked it as a gap (no content available there).",
+  keyLoadError: "The decryption key file itself failed to download.",
+  keyLoadTimeOut: "The decryption key request took too long and was abandoned.",
+
+  // hls.js ErrorDetails — buffer / MediaSource (the category bufferAppendNoProgress belongs to).
+  bufferAddCodecError: "The browser refused to create a SourceBuffer for one of the stream's codecs — usually means this browser can't decode that codec at all.",
+  bufferIncompatibleCodecsError: "The audio and video codecs can't both be buffered together in this browser's MSE implementation.",
+  bufferAppendError: "Handing decoded segment data to the browser's buffer threw an error outright.",
+  bufferAppendingError: "A segment append attempt failed; hls.js will retry a limited number of times before treating it as fatal.",
+  bufferAppendNoProgress: "A segment was accepted by the buffer with no error, but didn't actually add any playable time — often a codec/timestamp mismatch the browser silently rejected. Non-fatal by default; hls.js logs it and moves on unless it keeps happening.",
+  bufferStalledError: "Playback hit the end of buffered data and had to pause — a rebuffer, not a hard failure.",
+  bufferFullError: "The browser's media buffer is full and can't accept more data until some is evicted.",
+  bufferSeekOverHole: "A seek landed in a gap with no buffered data; hls.js is waiting for that region to load.",
+  bufferNudgeOnStall: "hls.js nudged the playback position slightly to break out of a stall caused by a small gap in buffered data.",
+  remuxAllocError: "hls.js's remuxer failed to allocate memory while repackaging a segment.",
+
+  // hls.js ErrorDetails — key system / DRM.
+  keySystemNoKeys: "No usable decryption keys were found for this content.",
+  keySystemNoAccess: "The browser denied access to the requested DRM system (EME) entirely.",
+  keySystemNoSession: "No active DRM session exists to apply a key or license to.",
+  keySystemNoConfiguredLicense: "hls.js needs a license-server URL for this DRM system but none was configured.",
+  keySystemLicenseRequestFailed: "The request to the DRM license server failed.",
+  keySystemServerCertificateRequestFailed: "Fetching the DRM server certificate failed.",
+  keySystemServerCertificateUpdateFailed: "The browser rejected the DRM server certificate it was given.",
+  keySystemSessionUpdateFailed: "The DRM session refused the license/key data it was given.",
+  keySystemStatusOutputRestricted: "The DRM license was granted but restricts output (e.g. blocks playback without HDCP) in a way this setup can't satisfy.",
+  keySystemStatusInternalError: "The DRM system (CDM) itself reported an internal error.",
+  keySystemDestroyMediaKeysError: "Cleaning up DRM media keys during teardown failed (usually harmless).",
+  keySystemDestroyCloseSessionError: "Closing a DRM session during teardown failed (usually harmless).",
+  keySystemDestroyRemoveSessionError: "Removing a DRM session during teardown failed (usually harmless).",
+
+  // hls.js ErrorDetails — everything else.
+  internalException: "An unexpected error occurred inside hls.js itself while handling an event.",
+  aborted: "An in-progress load was deliberately cancelled (e.g. because playback was stopped) — not a real failure.",
+  attachMediaError: "hls.js failed to attach itself to the <video> element.",
+  mediaSourceRequiresReset: "The browser's MediaSource object entered a state where hls.js has to reinitialize it before continuing.",
+  unknown: "hls.js couldn't categorize this error.",
 };
 
 export function escapeHtml(s) {

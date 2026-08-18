@@ -1,0 +1,22 @@
+<MPD mediaPresentationDuration="PT300.000S" minBufferTime="PT2.00S" profiles="urn:mpeg:dash:profile:isoff-live:2011" type="static" xmlns="urn:mpeg:dash:schema:mpd:2011">
+ <Period>
+  <EventStream schemeIdUri="urn:scte:scte35:2014:xml+bin" timescale="90000" value="1">
+   <Event presentationTime="2700000" duration="900000" id="1">
+    <Signal xmlns="http://www.scte.org/schemas/35/2016">
+     <Binary>/DAvAAAAAAAA///wFAVIAACPf+/+c2nALv4AUsz1AAAAAAAKAAhDVUVJAAABNWLbf1s=</Binary>
+    </Signal>
+   </Event>
+   <Event presentationTime="5400000" id="2">
+    <SpliceInfoSection xmlns="http://www.scte.org/schemas/35/2016" ptsAdjustment="0">
+     <TimeSignal>
+      <SpliceTime ptsTime="5400000"/>
+     </TimeSignal>
+    </SpliceInfoSection>
+   </Event>
+  </EventStream>
+  <AdaptationSet mimeType="video/mp4" contentType="video">
+   <SegmentTemplate duration="120" timescale="30" media="$RepresentationID$/$RepresentationID$_$Number$.m4v" startNumber="1" initialization="$RepresentationID$/$RepresentationID$_0.m4v"/>
+   <Representation id="v1" bandwidth="1000000" width="1280" height="720" codecs="avc1.4d401f"/>
+  </AdaptationSet>
+ </Period>
+</MPD>

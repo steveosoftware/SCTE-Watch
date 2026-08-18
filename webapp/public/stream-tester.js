@@ -10,6 +10,8 @@
 // an end user; a CORS failure is a genuine finding about the stream, not a
 // bug in this tool.
 
+import { escapeHtml, glossaryTerm } from "./glossary.js";
+
 const $ = (id) => document.getElementById(id);
 
 const urlInput = $("tester-url");
@@ -44,7 +46,13 @@ function suppressSidecarSubtitles(track) {
 video.textTracks.addEventListener("addtrack", (e) => suppressSidecarSubtitles(e.track));
 
 function tlog(msg) {
-  testerLog.textContent += `[${new Date().toISOString().slice(11, 19)}] ${msg}\n`;
+  tlogHtml(escapeHtml(msg));
+}
+
+// For lines that need embedded clickable glossary terms — `html` must
+// already be escaped/term-wrapped by the caller (see glossaryTerm()).
+function tlogHtml(html) {
+  testerLog.innerHTML += `[${new Date().toISOString().slice(11, 19)}] ${html}\n`;
   testerLog.scrollTop = testerLog.scrollHeight;
 }
 
@@ -211,7 +219,8 @@ function playHls(url) {
     hls.subtitleTrack = -1; // don't load the sidecar WebVTT rendition at all
   });
   hls.on(window.Hls.Events.ERROR, (_evt, data) => {
-    tlog(`hls.js error: ${data.type}/${data.details}${data.response ? ` (HTTP ${data.response.code})` : ""}`);
+    const httpNote = data.response ? ` (HTTP ${data.response.code})` : "";
+    tlogHtml(`hls.js error: ${glossaryTerm(data.type)}/${glossaryTerm(data.details)}${escapeHtml(httpNote)}`);
     const hint = diagnose(`${data.type} ${data.details} ${data.response ? data.response.code : ""}`);
     if (hint) tlog(`   → ${hint}`);
     if (data.fatal) statusEl.textContent = `error: ${data.details}`;

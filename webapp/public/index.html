@@ -24,8 +24,14 @@
       <button id="tester-load">Load &amp; Play</button>
       <button id="tester-stop" class="secondary" disabled>Stop</button>
     </div>
-    <div class="row">
+    <div class="row media-row">
       <video id="tester-video" controls muted playsinline></video>
+      <div class="variants-wrap">
+        <table id="tester-variants" class="variants-table" hidden>
+          <thead><tr><th>#</th><th>Resolution</th><th>Bandwidth</th><th>Codecs</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
     <div class="row stats-row">
       <span class="stat"><label>Status</label><span id="tester-status">idle</span></span>
@@ -35,10 +41,6 @@
       <span class="stat"><label>Dropped frames</label><span id="tester-dropped">–</span></span>
       <span class="stat"><label>Startup time</label><span id="tester-startup">–</span></span>
     </div>
-    <table id="tester-variants" class="variants-table" hidden>
-      <thead><tr><th>#</th><th>Resolution</th><th>Bandwidth</th><th>Codecs</th></tr></thead>
-      <tbody></tbody>
-    </table>
     <pre id="tester-log" class="log small"></pre>
   </section>
 
@@ -51,6 +53,16 @@
       <input id="manifest-interval" type="number" min="1" step="0.5" value="4">
       <button id="manifest-download-btn" class="secondary">Download variant log</button>
       <span id="manifest-status" class="status"></span>
+    </div>
+    <div class="row">
+      <label>Health</label>
+      <span id="manifest-health" class="status"></span>
+      <label>DRM</label>
+      <span id="manifest-drm" class="status"></span>
+    </div>
+    <div class="row">
+      <label>CDN chain</label>
+      <span id="manifest-cdn" class="status"></span>
     </div>
     <pre id="manifest-output" class="log"></pre>
     <div class="row">

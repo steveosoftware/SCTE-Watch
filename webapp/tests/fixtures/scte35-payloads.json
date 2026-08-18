@@ -1,0 +1,58 @@
+{
+  "splice_insert_basic": {
+    "base64": "/DAvAAAAAAAA///wFAVIAACPf+/+c2nALv4AUsz1AAAAAAAKAAhDVUVJAAABNWLbf1s=",
+    "note": "Real captured payload (pts_adjustment=0).",
+    "expect": {
+      "splice_command": "splice_insert",
+      "splice_event_id": "0x4800008F",
+      "splice_cancel": false,
+      "out_of_network": true,
+      "pts_time_s": "21514.559s",
+      "break_duration_s": "60.294s"
+    }
+  },
+  "splice_insert_with_pts_adjustment": {
+    "base64": "/DAvAAAADbug///wFAVIAACPf+/+c2nALv4AUsz1AAAAAAAKAAhDVUVJAAABNWLbf1s=",
+    "note": "Same as splice_insert_basic but pts_adjustment set to 900000 ticks (10.000s) — regression test for the pts_adjustment-never-applied bug. pts_time_s must be exactly 10.000s greater than splice_insert_basic's; break_duration_s must be unchanged (it's a relative span, not an absolute time, so pts_adjustment does not apply to it).",
+    "expect": {
+      "splice_command": "splice_insert",
+      "splice_event_id": "0x4800008F",
+      "splice_cancel": false,
+      "out_of_network": true,
+      "pts_adjustment_s": "10.000s",
+      "pts_time_s": "21524.559s",
+      "break_duration_s": "60.294s"
+    }
+  },
+  "time_signal_provider_ad_start": {
+    "base64": "/AAAAAAAAAAAAAAABQb+ACky4AAaAhhDVUVJAAAAAX+AAwtBQkNEMTIzNDU2NzAAAAAA",
+    "note": "Hand-built time_signal + one segmentation_descriptor (Provider Advertisement Start, Ad-ID upid) — exercises the descriptor loop and glossary-linked segmentation type name, not covered by the splice_insert samples.",
+    "expect": {
+      "splice_command": "time_signal",
+      "pts_time_s": "30.000s",
+      "descriptors": [
+        {
+          "segmentation_event_id": "0x00000001",
+          "segmentation_type_id": "0x30",
+          "segmentation_type_name": "Provider Advertisement Start",
+          "upid_type": "Ad-ID",
+          "upid": "ABCD1234567"
+        }
+      ]
+    }
+  },
+  "too_short": {
+    "base64": "/AAAAA==",
+    "note": "Fewer than 14 bytes — must hit the length guard, not throw.",
+    "expect": {
+      "error": "too short"
+    }
+  },
+  "bad_table_id": {
+    "base64": "AAAAAAAAAAAAAAAAAAAA",
+    "note": "First byte isn't 0xFC — must hit the table_id guard, not throw or misparse.",
+    "expect": {
+      "error": "bad table_id 0x00"
+    }
+  }
+}

@@ -71,6 +71,17 @@ function hex2(n) {
   return n.toString(16).padStart(2, "0").toUpperCase();
 }
 
+// PTS is a 33-bit counter (90kHz ticks) that wraps at 2^33.
+const PTS_MODULO = 0x200000000;
+
+// pts_adjustment (bytes 4-8) must be added to every absolute splice_time PTS
+// in the message per spec — it's how a splicer/transcoder that re-stamps
+// timing keeps downstream PTS values correct. It does NOT apply to
+// break_duration, which is a relative span, not an absolute time.
+function applyPtsAdjustment(rawPts, adjustmentTicks) {
+  return (rawPts + adjustmentTicks) % PTS_MODULO;
+}
+
 export function bytesFromBase64(s) {
   const bin = atob(s);
   const arr = new Uint8Array(bin.length);
@@ -132,6 +143,10 @@ export function decodeScte35(bytes) {
 
   try {
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const ptsAdjustment = (bytes[4] & 0x01) * 0x100000000 + dv.getUint32(5);
+    if (ptsAdjustment !== 0) {
+      info.pts_adjustment_s = `${(ptsAdjustment / 90000).toFixed(3)}s`;
+    }
     const spliceCmdLen = ((bytes[11] & 0x0f) << 8) | bytes[12];
     const spliceCmdType = bytes[13];
     info.splice_command = SPLICE_CMD[spliceCmdType] ?? `0x${hex2(spliceCmdType)}`;
@@ -158,7 +173,7 @@ export function decodeScte35(bytes) {
           if (timeSpecified) {
             const hi = bytes[p] & 0x01;
             const lo = dv.getUint32(p + 1);
-            const pts = hi * 0x100000000 + lo;
+            const pts = applyPtsAdjustment(hi * 0x100000000 + lo, ptsAdjustment);
             info.pts_time_s = `${(pts / 90000).toFixed(3)}s`;
             p += 5;
           } else {
@@ -191,7 +206,7 @@ export function decodeScte35(bytes) {
       if (timeSpecified && bytes.length >= cmdStart + 5) {
         const hi = bytes[cmdStart] & 0x01;
         const lo = dv.getUint32(cmdStart + 1);
-        const pts = hi * 0x100000000 + lo;
+        const pts = applyPtsAdjustment(hi * 0x100000000 + lo, ptsAdjustment);
         info.pts_time_s = `${(pts / 90000).toFixed(3)}s`;
         p += 5;
       } else {
@@ -270,6 +285,10 @@ export function formatDecoded(info, prefix = "    ") {
   }
   lines.push(line);
 
+  if (info.pts_adjustment_s) {
+    lines.push(`${prefix}  pts_adjustment: ${escapeHtml(info.pts_adjustment_s)} (already applied to pts/time above)`);
+  }
+
   const err = info.error ?? info.decode_error;
   if (err) lines.push(`${prefix}  decode err : ${escapeHtml(err)}`);
 
@@ -291,20 +310,325 @@ export function formatDecoded(info, prefix = "    ") {
   return lines;
 }
 
-// Returns [{bandwidth, url}], ascending by bandwidth.
+// Returns [{bandwidth, url, resolution, codecs}], ascending by bandwidth.
+// resolution is {width, height} or null when the variant doesn't declare one.
 export function parseMaster(text, baseUrl) {
   const lines = text.split(/\r?\n/);
   const variants = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].startsWith("#EXT-X-STREAM-INF:")) {
-      const m = /BANDWIDTH=(\d+)/.exec(lines[i]);
+      const attrs = lines[i];
+      const m = /BANDWIDTH=(\d+)/.exec(attrs);
       const bandwidth = m ? parseInt(m[1], 10) : 0;
+      const resMatch = /RESOLUTION=(\d+)x(\d+)/.exec(attrs);
+      const resolution = resMatch
+        ? { width: parseInt(resMatch[1], 10), height: parseInt(resMatch[2], 10) }
+        : null;
+      const codecsMatch = /CODECS="([^"]*)"/.exec(attrs);
+      const codecs = codecsMatch ? codecsMatch[1] : null;
       if (i + 1 < lines.length && !lines[i + 1].startsWith("#")) {
         const uri = lines[i + 1].trim();
-        variants.push({ bandwidth, url: new URL(uri, baseUrl).toString() });
+        variants.push({ bandwidth, url: new URL(uri, baseUrl).toString(), resolution, codecs });
       }
     }
   }
   variants.sort((a, b) => a.bandwidth - b.bandwidth);
   return variants;
+}
+
+// Flags variant ladders where resolution doesn't increase monotonically
+// with bandwidth — a real authoring bug (e.g. a nominally "1080p" rendition
+// encoded at a lower bitrate than a "720p" one below it), not a transient
+// condition. Only variants with a RESOLUTION attribute are considered;
+// audio-only or unlabeled variants are skipped rather than treated as 0x0.
+// This checks the ladder as declared in one master fetch — it does NOT
+// detect a ladder changing mid-session, since the master isn't re-polled
+// after the initial fetch (see ROADMAP.md).
+export function findVariantLadderAnomalies(variants) {
+  const withRes = variants.filter((v) => v.resolution).sort((a, b) => a.bandwidth - b.bandwidth);
+  const anomalies = [];
+  for (let i = 1; i < withRes.length; i++) {
+    const prev = withRes[i - 1];
+    const curr = withRes[i];
+    const prevPixels = prev.resolution.width * prev.resolution.height;
+    const currPixels = curr.resolution.width * curr.resolution.height;
+    if (currPixels < prevPixels) {
+      anomalies.push({
+        lower: prev,
+        higher: curr,
+        note: `${curr.resolution.width}x${curr.resolution.height} at ${curr.bandwidth}bps is a lower resolution than ${prev.resolution.width}x${prev.resolution.height} at ${prev.bandwidth}bps despite higher bandwidth`,
+      });
+    }
+  }
+  return anomalies;
+}
+
+export function extractMediaSequence(text) {
+  const m = /#EXT-X-MEDIA-SEQUENCE:(\d+)/.exec(text);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function countSegments(text) {
+  return (text.match(/^#EXTINF:/gm) || []).length;
+}
+
+export function extractTargetDuration(text) {
+  const m = /#EXT-X-TARGETDURATION:(\d+)/.exec(text);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// Compares two consecutive fetches of the same live HLS media playlist.
+// Per the HLS spec, EXT-X-MEDIA-SEQUENCE should advance by exactly the
+// number of segments that fell off the front of the list since the last
+// fetch — if it advanced by MORE than the segment count we actually saw,
+// the server skipped segments this poller never had a chance to see.
+// Returns null when there's nothing to report (no gap, or either fetch is
+// missing a sequence number to compare).
+export function detectSequenceGap(prevText, currText) {
+  const prevSeq = extractMediaSequence(prevText);
+  const currSeq = extractMediaSequence(currText);
+  if (prevSeq === null || currSeq === null) return null;
+  const prevSegCount = countSegments(prevText);
+  const advanced = currSeq - prevSeq;
+  if (advanced > prevSegCount) {
+    return { prevSeq, currSeq, advanced, prevSegCount, missing: advanced - prevSegCount };
+  }
+  return null;
+}
+
+// Returns the segment URI immediately following each #EXT-X-DISCONTINUITY
+// tag (or null if it's the last line), for display context.
+export function findDiscontinuities(text) {
+  const lines = text.split(/\r?\n/);
+  const results = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("#EXT-X-DISCONTINUITY")) {
+      let nextSegment = null;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j] && !lines[j].startsWith("#")) {
+          nextSegment = lines[j].trim();
+          break;
+        }
+      }
+      results.push({ beforeSegment: nextSegment });
+    }
+  }
+  return results;
+}
+
+// A live playlist that hasn't advanced (same MEDIA-SEQUENCE) for longer
+// than a few target durations is stale — the origin has likely stalled.
+// staleMs uses 3x target duration, a common tolerance in HLS monitoring
+// tools to absorb normal poll/CDN jitter without false-flagging every poll
+// that happens to land between segment boundaries.
+export function isPlaylistStale(nowMs, lastChangeAtMs, targetDurationSeconds) {
+  if (lastChangeAtMs === null || !targetDurationSeconds) return false;
+  return nowMs - lastChangeAtMs > targetDurationSeconds * 3 * 1000;
+}
+
+// Finds SCTE-35 signals carried out-of-band in a DASH MPD via
+// <EventStream schemeIdUri="...scte35..."><Event .../></EventStream>. Two
+// encodings show up in the wild:
+//   - urn:scte:scte35:2014:xml+bin — <Event> contains <Signal><Binary>
+//     BASE64</Binary></Signal>: the same splice_info_section bytes as
+//     out-of-band HLS, decodable by the existing decodeScte35() unchanged.
+//   - urn:scte:scte35:2013:xml — <Event> contains fully XML-encoded splice
+//     info (no base64 blob). NOT decoded here — flagged as xmlOnly instead
+//     of silently skipped, since pretending it doesn't exist is worse than
+//     an honest "not supported yet" (see ROADMAP.md).
+// Detection of the EventStream itself is lenient (any schemeIdUri
+// containing "scte35", case-insensitive) since real-world packagers vary;
+// only the *encoding* inside an Event needs to match a known shape to
+// actually decode.
+//
+// This is regex-based, not a real XML parser, matching how the HLS side of
+// this file already works (line/pattern scanning, not a full playlist
+// parser) — and it keeps this module DOM-free, so it still runs under
+// plain Node for testing.
+export function findDashScte35Events(mpdText) {
+  const events = [];
+  const streamRe = /<EventStream\b([^>]*)>([\s\S]*?)<\/EventStream>/gi;
+  let streamMatch;
+  while ((streamMatch = streamRe.exec(mpdText))) {
+    const [, streamAttrs, streamBody] = streamMatch;
+    const schemeMatch = /schemeIdUri\s*=\s*"([^"]*)"/i.exec(streamAttrs);
+    const schemeIdUri = schemeMatch ? schemeMatch[1] : "";
+    if (!/scte35/i.test(schemeIdUri)) continue;
+
+    const timescaleMatch = /\btimescale\s*=\s*"(\d+)"/i.exec(streamAttrs);
+    const timescale = timescaleMatch ? parseInt(timescaleMatch[1], 10) : 1;
+
+    const eventRe = /<Event\b([^>]*?)(?:\/>|>([\s\S]*?)<\/Event>)/gi;
+    let eventMatch;
+    while ((eventMatch = eventRe.exec(streamBody))) {
+      const [, eventAttrs, eventBody] = eventMatch;
+      const attr = (name) => {
+        const m = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i").exec(eventAttrs);
+        return m ? m[1] : null;
+      };
+      const presentationTimeRaw = attr("presentationTime");
+      const durationRaw = attr("duration");
+
+      const binaryMatch = eventBody
+        ? /<(?:\w+:)?Binary\b[^>]*>([\s\S]*?)<\/(?:\w+:)?Binary>/i.exec(eventBody)
+        : null;
+
+      events.push({
+        schemeIdUri,
+        id: attr("id"),
+        presentationTimeS: presentationTimeRaw !== null ? parseFloat(presentationTimeRaw) / timescale : null,
+        durationS: durationRaw !== null ? parseFloat(durationRaw) / timescale : null,
+        base64: binaryMatch ? binaryMatch[1].replace(/\s+/g, "") : null,
+        xmlOnly: !binaryMatch && !!eventBody && eventBody.trim().length > 0,
+      });
+    }
+  }
+  return events;
+}
+
+// Maps each cue-marker line in an HLS playlist to a real wall-clock time,
+// for one line at a time. A SCTE-35 cue's own pts_time_s is a 90kHz counter
+// with an arbitrary origin — not convertible to wall-clock without an
+// anchor, and the manifest never gives us a PTS-to-wallclock anchor
+// directly. What it DOES give us:
+//   - #EXT-X-DATERANGE's START-DATE attribute — an explicit wall-clock
+//     time for that cue, authoritative when present.
+//   - #EXT-X-PROGRAM-DATE-TIME, which timestamps a segment's start; summing
+//     #EXTINF durations from there to a cue's position interpolates that
+//     cue's wall-clock time.
+// Returns [{line, wallclockIso, source}] for every cue-marker line found,
+// in document order — source is "daterange" (authoritative) or "timeline"
+// (interpolated), or wallclockIso is null if neither is available (e.g. no
+// PROGRAM-DATE-TIME anywhere earlier in this playlist).
+export function findCueWallclocks(text) {
+  const lines = text.split(/\r?\n/);
+  const results = [];
+  let anchorMs = null;
+  let elapsedSinceAnchor = 0;
+
+  for (const line of lines) {
+    const pdtMatch = /^#EXT-X-PROGRAM-DATE-TIME:(.+)$/.exec(line);
+    if (pdtMatch) {
+      const t = Date.parse(pdtMatch[1].trim());
+      if (!Number.isNaN(t)) {
+        anchorMs = t;
+        elapsedSinceAnchor = 0;
+      }
+      continue;
+    }
+    const extinfMatch = /^#EXTINF:([\d.]+)/.exec(line);
+    if (extinfMatch) {
+      elapsedSinceAnchor += parseFloat(extinfMatch[1]);
+      continue;
+    }
+    if (CUE_PATTERN.test(line)) {
+      let wallclockMs = null;
+      let source = null;
+      const startDateMatch = /START-DATE="([^"]+)"/.exec(line);
+      if (startDateMatch) {
+        const t = Date.parse(startDateMatch[1]);
+        if (!Number.isNaN(t)) {
+          wallclockMs = t;
+          source = "daterange";
+        }
+      }
+      if (wallclockMs === null && anchorMs !== null) {
+        wallclockMs = anchorMs + elapsedSinceAnchor * 1000;
+        source = "timeline";
+      }
+      results.push({
+        line,
+        wallclockIso: wallclockMs !== null ? new Date(wallclockMs).toISOString() : null,
+        source,
+      });
+    }
+  }
+  return results;
+}
+
+// DRM system IDs are shared between HLS's KEYFORMAT attribute and DASH's
+// ContentProtection schemeIdUri — same "Common Encryption" UUID registry
+// either way, plus Apple's own non-UUID scheme for FairPlay. Keys are
+// lowercase; lookups below normalize to match.
+export const DRM_SYSTEM = {
+  identity: "Clear / AES-128 (no DRM)",
+  "com.apple.streamingkeydelivery": "FairPlay",
+  "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed": "Widevine",
+  "urn:uuid:9a04f079-9840-4286-ab92-e65be0885f95": "PlayReady",
+  "urn:uuid:1077efec-c0b2-4d02-ace3-3c1e52e2fb4b": "ClearKey (W3C Common Encryption)",
+};
+
+function lookupDrmSystem(schemeOrKeyformat) {
+  return DRM_SYSTEM[(schemeOrKeyformat || "").toLowerCase()] ?? schemeOrKeyformat;
+}
+
+// Parses #EXT-X-KEY / #EXT-X-SESSION-KEY — HLS's encryption/DRM signaling.
+// Detection only: METHOD, KEYFORMAT (mapped to a friendly DRM system name),
+// URI, IV. Never fetches the key or attempts decryption — see ROADMAP.md
+// for why that's only even theoretically possible for plain AES-128.
+export function findHlsKeys(text) {
+  const lines = text.split(/\r?\n/);
+  const keys = [];
+  for (const line of lines) {
+    const m = /^#EXT-X-(KEY|SESSION-KEY):(.*)$/.exec(line);
+    if (!m) continue;
+    const [, tagKind, attrs] = m;
+    const attr = (name) => {
+      const am = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|([^,]*))`, "i").exec(attrs);
+      return am ? (am[1] ?? am[2] ?? null) : null;
+    };
+    const method = attr("METHOD");
+    if (!method || method === "NONE") continue; // NONE is an explicit "not encrypted" marker
+    const keyformat = attr("KEYFORMAT") ?? "identity";
+    keys.push({
+      tag: `EXT-X-${tagKind}`,
+      method,
+      keyformat,
+      drmSystem: lookupDrmSystem(keyformat),
+      uri: attr("URI"),
+      iv: attr("IV"),
+    });
+  }
+  return keys;
+}
+
+// Parses <ContentProtection> — DASH's encryption/DRM signaling. Appears per
+// AdaptationSet; schemeIdUri identifies the DRM system, default_KID (often
+// written cenc:default_KID, matched either way) gives the active key id.
+export function findDashContentProtection(mpdText) {
+  const results = [];
+  const cpRe = /<ContentProtection\b([^>]*?)(?:\/>|>([\s\S]*?)<\/ContentProtection>)/gi;
+  let m;
+  while ((m = cpRe.exec(mpdText))) {
+    const [, attrs] = m;
+    const attr = (name) => {
+      const am = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i").exec(attrs);
+      return am ? am[1] : null;
+    };
+    const schemeIdUri = attr("schemeIdUri");
+    if (!schemeIdUri) continue;
+    results.push({
+      schemeIdUri,
+      drmSystem: lookupDrmSystem(schemeIdUri),
+      defaultKid: attr("default_KID"),
+    });
+  }
+  return results;
+}
+
+// Builds a one-line human summary plus a change-fingerprint from a list of
+// {drmSystem, keyid} shaped entries (works for either findHlsKeys' output,
+// mapped to {drmSystem, keyid: uri+iv}, or findDashContentProtection's,
+// mapped to {drmSystem, keyid: defaultKid}) — the fingerprint is what the
+// poll loop compares across fetches to detect key/IV rotation.
+export function summarizeDrm(entries) {
+  if (!entries.length) {
+    return { text: "No encryption signaled (clear)", fingerprint: "" };
+  }
+  const systems = [...new Set(entries.map((e) => e.drmSystem))];
+  const keyids = [...new Set(entries.map((e) => e.keyid).filter(Boolean))];
+  const label = systems.length > 1 ? `Multi-DRM: ${systems.join(", ")}` : systems[0];
+  const text = keyids.length ? `${label} — key: ${keyids.join(", ")}` : label;
+  const fingerprint = JSON.stringify(entries.map((e) => [e.drmSystem, e.keyid]).sort());
+  return { text, fingerprint };
 }

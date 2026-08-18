@@ -119,6 +119,11 @@ button.secondary {
   font-size: 0.85rem;
 }
 
+.status.warn {
+  color: #f0b429;
+  font-weight: 600;
+}
+
 .log {
   background: #0a0b0c;
   border: 1px solid #24262b;
@@ -144,13 +149,29 @@ button.secondary {
   height: 16rem;
 }
 
+.media-row {
+  align-items: flex-start;
+}
+
 #tester-video {
   width: 100%;
   max-width: 720px;
+  flex: 1 1 480px;
   aspect-ratio: 16 / 9;
   object-fit: contain;
   background: #000;
   border-radius: 6px;
+}
+
+.variants-wrap {
+  flex: 1 1 280px;
+  min-width: 260px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.variants-wrap:has(#tester-variants[hidden]) {
+  display: none; /* don't reserve empty space next to the video before a stream loads */
 }
 
 .stats-row {
