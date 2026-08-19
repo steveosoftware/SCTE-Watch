@@ -19,7 +19,7 @@ Update this alongside `CONTEXT.md` as items land.
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
 5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
-6. **Blocked** — Gracenote, pending credentials (explicitly deferred by operator, 2026-08-18 — revisit once the API query shape/credentials show up).
+6. **Gracenote EPG drift detection — unblocked** (2026-08-19). API query shape confirmed from operator's existing local scripts; not yet built. See its own section below (moved out of "Blocked").
 
 ---
 
@@ -113,13 +113,26 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 
 ---
 
-## Blocked — waiting on external info
+## Gracenote EPG drift detection — unblocked, not yet built
 
-### Gracenote EPG drift detection
+**API shape confirmed** (2026-08-19) from a set of working Bash scripts the operator already runs for a related manual QA process (comparing Gracenote's outbound schedule against platform exports) — reviewed and summarized here, not committed to the repo (they contain a live API key; see security note below).
 
-**Not starting** until the exact API query shape and credentials are provided.
+**API**: Gracenote **On API v3**, base `https://on-api.gracenote.com/v3`. Auth is a static `api_key` query-string param on every request — no OAuth, no per-request signing, no visible rotation (the same key appears reused across script versions going back to 2023). Endpoints used:
 
-Plan once unblocked: server-side proxy (Amplify Function) holding the API key — never shipped to the client — comparing EPG "what's on now" against the stream's own signaling (SCTE-35 `Program Start`/`Program End` descriptors, or `#EXT-X-PROGRAM-DATE-TIME`). PTS→wallclock, needed so EPG times and cue times share a basis, is now built (Phase 1).
+- **`/Sources?api_key=…&prgSvcId=…`** — channel name lookup for a given `prgSvcId` (Gracenote's own channel/service ID, not the operator's own channel ID — the scripts always take both as separate params and never derive one from the other).
+- **`/Schedules?api_key=…&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&prgSvcId=…`** — the actual "what's on when" data, this is the one that matters for drift detection. Response shape **bifurcates by content type**, detected empirically (fetch once, peek at the first entry's `remoteId`; if it starts with `XM` the channel is Xumo-stitched):
+  - Xumo-stitched: entries under `//broadcast`, with `../../@prgSvcId`, `../../@date`, `../@time`, `../@dur`, `../@TMSId`, and a `id[@type='remoteId']` child (the Xumo asset ID).
+  - Simulcast (standard linear): entries under `//event` directly, with `@prgSvcId`, `@date`, `@time`, `@dur`, `@TMSId`.
+  - Either way, the field that matters most for us is **TMSId** — Gracenote's canonical program ID, scoped to a `{date, time, duration}` window on this channel.
+- **`/Programs?api_key=…&tmsId=A,B,C,…`** — batched program metadata lookup, comma-joined TMS IDs in **one request** (the scripts also have an older one-tmsId-at-a-time variant with a manual `sleep 2` throttle between calls — the batched form is strictly better and is what we should use; no reason to replicate the throttled version). Field mapping depends on the TMS ID prefix: `EP`/`SH` (episode/show) → title/duration/desc/rating; `MV` (movie) → title/runTime/desc/rating.
+
+**A drift-detector prototype already exists**, just comparing the wrong two things for our purposes: `xumo_vs_gracenote.sh` fetches a Gracenote `/Schedules` window, parses a separately-exported Xumo XML file (a manual export, not an API — from `~/Downloads/{callsign}_{date}.xml`), merges them side-by-side by row position, and flags rows where the asset ID or start time disagree, then computes an `(total − mismatches) / total` alignment percentage. The comparison logic (and its CSV-merge/report pattern) transfers directly to our actual goal — swap "Xumo export" for "this stream's own SCTE-35-derived wallclock timeline" and the shape of the check is the same.
+
+**Design for our version**: a Lambda endpoint that takes `{prgSvcId, timestamp}` (not an arbitrary URL — unlike `/api/fetch`, this one needs to attach a secret server-side, so it must construct the Gracenote URL itself from safe, narrow params rather than proxying a client-supplied target), fetches `/Schedules` for a window around `timestamp`, finds the entry whose `{date,time,duration}` window contains it, and returns `{title, tmsId, startTime, endTime}`. The client then compares that boundary against its own wallclock-mapped SCTE-35 `Program Start`/`Program End` cue (via `findCueWallclocks()`, built in Phase 1) — a mismatch beyond some tolerance is drift. `Programs` (the title/desc lookup) is only needed for a human-readable report, not for the boundary-time check itself.
+
+**Security note**: the API key lives in plaintext in the operator's local scripts (`~/Downloads/gracenote/*.sh`, several copies including archived versions) — fine for a local manual-QA tool, **not** how it should land here. Needs to move to a Lambda environment variable (or Secrets Manager) when this gets built, exactly per the existing plan below — never shipped to the client, never committed to this repo.
+
+Plan once built: server-side proxy (the Lambda above) holding the API key — never shipped to the client — comparing EPG "what's on now" against the stream's own signaling (SCTE-35 `Program Start`/`Program End` descriptors, or `#EXT-X-PROGRAM-DATE-TIME`). PTS→wallclock, needed so EPG times and cue times share a basis, is already built (Phase 1).
 
 ---
 
