@@ -16,6 +16,11 @@ Future planning/scoping lives in `ROADMAP.md` alongside this file — check it b
 
 - **HLS with `.ts` segments — not fMP4.** Confirmed 2026-08-18. This directly affects the in-band SCTE-35 item in ROADMAP.md Phase 4: the fMP4/`emsg` path (which would've been pure-JS, no native dependency) is **not relevant** to this operator's actual streams — build the MPEG-TS/PID-demuxing path (`threefive` or `tsduck` subprocess) first, not the fMP4 path.
 - Runs a FAST channel setup fronted by CDNs — the CDN-chain feature (Manifest Inspector's "CDN chain" line) exists specifically because of a real operational issue: chained CloudFront (CloudFront fronting CloudFront) breaks their setup and previously required manual `dig` diagnosis. See the CDN chain status line notes below for how that's detected.
+- **Has an existing manual Gracenote EPG QA process** — a set of Bash scripts at `~/Downloads/gracenote/` (local only, **deliberately not in this repo**: they carry a live API key in plaintext) that pull Gracenote On API v3 schedules and diff them against a platform EPG export. Reviewed 2026-08-19/20; the API shape, the decisions taken, and the two defects worth not reproducing are all written up in ROADMAP.md's Gracenote section. Relevant context for that work: the operator's channels span both Xumo-stitched and simulcast types, which the Gracenote `/Schedules` response shape differs between.
+
+## Public-facing app — credential policy
+
+This is deployed publicly, so **the app holds no third-party API credentials at all**. Any integration needing a key (Gracenote today, anything similar later) takes the *user's own* key via a UI input — `type="password"`, in-memory/sessionStorage only, never localStorage, never a Lambda env var, never committed. Per-user keys mean no shared quota to abuse, no secret in our infrastructure, and nothing for us to rotate. Decided 2026-08-20; it supersedes the earlier "Lambda holds the key" plan that ROADMAP.md used to describe. The operator gates the deployed site behind Amplify's own password protection separately (they manage that themselves — not something this codebase configures).
 
 ## Running it
 
