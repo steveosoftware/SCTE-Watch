@@ -16,6 +16,7 @@ import {
   compareChannelNames,
   gracenoteScheduleUrl,
   gracenoteSourceUrl,
+  buildComparisonCsv,
   addDays,
 } from "./epg.js";
 import { fetchViaProxy } from "./net.js";
@@ -29,6 +30,7 @@ const dateInput = $("epg-date");
 const daysInput = $("epg-days");
 const toleranceInput = $("epg-tolerance");
 const runBtn = $("epg-run");
+const downloadBtn = $("epg-download");
 const statusEl = $("epg-status");
 const channelEl = $("epg-channel");
 const outputEl = $("epg-output");
@@ -73,6 +75,18 @@ function renderChannelConfirmation(cmp, xumoChannelId) {
     `(channel ${id}) &nbsp;·&nbsp; ${escapeHtml(mark)}`;
 }
 
+// Caps a long list, but says so — silently showing 50 of 200 findings
+// would understate real drift.
+function listSection(lines, label, items, render, limit = 50) {
+  if (!items.length) return;
+  lines.push("");
+  lines.push(`${label} (${items.length})`);
+  for (const it of items.slice(0, limit)) lines.push(render(it));
+  if (items.length > limit) {
+    lines.push(`  … and ${items.length - limit} more (download the CSV for the full list)`);
+  }
+}
+
 function renderReport(report, warnings) {
   const s = report.summary;
   const lines = [];
@@ -83,13 +97,16 @@ function renderReport(report, warnings) {
   lines.push("SUMMARY");
   lines.push(`  programmes         : ${s.xumoTotal} Xumo · ${s.gracenoteTotal} Gracenote`);
   lines.push(`  paired on start    : ${s.paired}`);
-  lines.push(`  start-time drift   : ${s.timeDrifts}`);
+  lines.push(`  ${glossaryTerm("start-time drift")}   : ${s.timeDrifts}`);
   lines.push(`  ${glossaryTerm("TMS ID")} mismatches  : ${s.tmsMismatches} of ${s.tmsComparable} comparable`);
   if (s.noTmsMapping) {
-    lines.push(`  no TMS mapping     : ${s.noTmsMapping} (excluded — not counted as mismatches)`);
+    lines.push(`  ${glossaryTerm("no TMS mapping")}     : ${s.noTmsMapping} (excluded — not counted as mismatches)`);
   }
   if (s.assetComparable) {
-    lines.push(`  asset id mismatches: ${s.assetMismatches} of ${s.assetComparable} comparable`);
+    lines.push(
+      `  asset id mismatches: ${s.assetMismatches} of ${s.assetComparable} comparable ` +
+        `(Xumo programme-id vs Gracenote ${glossaryTerm("remoteId")})`
+    );
   }
   lines.push(`  only in Xumo       : ${s.onlyInXumo}`);
   lines.push(`  only in Gracenote  : ${s.onlyInGracenote}`);
@@ -98,45 +115,49 @@ function renderReport(report, warnings) {
   );
 
   const issues = report.matched.filter((m) => m.timeDrift || m.tmsMismatch || m.assetMismatch);
-  if (issues.length) {
-    lines.push("");
-    lines.push(`MISMATCHES (${issues.length})`);
-    for (const m of issues) {
-      const what = [];
-      if (m.timeDrift) what.push(`start ${signed(m.deltaSeconds)}`);
-      if (m.tmsMismatch) what.push(`TMS ${escapeHtml(m.xumo.tmsId)} vs ${escapeHtml(m.gracenote.tmsId)}`);
-      if (m.assetMismatch) what.push(`asset ${escapeHtml(m.xumo.programmeId)} vs ${escapeHtml(m.gracenote.remoteId)}`);
-      lines.push(`  ${fmtTime(m.xumo.startMs)}  ${escapeHtml(m.xumo.title ?? "?")}`);
-      lines.push(`      ${what.join(" · ")}`);
-    }
-  }
+  listSection(lines, "MISMATCHES", issues, (m) => {
+    const what = [];
+    if (m.timeDrift) what.push(`start ${signed(m.deltaSeconds)}`);
+    if (m.tmsMismatch) what.push(`TMS ${escapeHtml(m.xumo.tmsId)} vs ${escapeHtml(m.gracenote.tmsId)}`);
+    if (m.assetMismatch) what.push(`asset ${escapeHtml(m.xumo.programmeId)} vs ${escapeHtml(m.gracenote.remoteId)}`);
+    return `  ${fmtTime(m.xumo.startMs)}  ${escapeHtml(m.xumo.title ?? "?")}\n      ${what.join(" · ")}`;
+  });
 
-  if (report.onlyInXumo.length) {
-    lines.push("");
-    lines.push(`ONLY IN XUMO (${report.onlyInXumo.length})`);
-    for (const p of report.onlyInXumo.slice(0, 50)) {
-      lines.push(`  ${fmtTime(p.startMs)}  ${escapeHtml(p.title ?? "?")}`);
-    }
-  }
-  if (report.onlyInGracenote.length) {
-    lines.push("");
-    lines.push(`ONLY IN GRACENOTE (${report.onlyInGracenote.length})`);
-    for (const p of report.onlyInGracenote.slice(0, 50)) {
-      lines.push(`  ${fmtTime(p.startMs)}  ${escapeHtml(p.tmsId ?? "?")}`);
-    }
-  }
-
-  const unmapped = report.matched.filter((m) => !m.tmsComparable);
-  if (unmapped.length) {
-    lines.push("");
-    lines.push(`NO TMS MAPPING (${unmapped.length}) — reported, not counted against alignment`);
-    for (const m of unmapped.slice(0, 50)) {
-      lines.push(`  ${fmtTime(m.xumo.startMs)}  ${escapeHtml(m.xumo.title ?? "?")}`);
-    }
-  }
+  listSection(
+    lines,
+    "ONLY IN XUMO",
+    report.onlyInXumo,
+    (p) => `  ${fmtTime(p.startMs)}  ${escapeHtml(p.title ?? "?")}`
+  );
+  listSection(
+    lines,
+    "ONLY IN GRACENOTE",
+    report.onlyInGracenote,
+    (p) => `  ${fmtTime(p.startMs)}  ${escapeHtml(p.tmsId ?? "?")}`
+  );
+  listSection(
+    lines,
+    "NO TMS MAPPING — reported, not counted against alignment",
+    report.matched.filter((m) => !m.tmsComparable),
+    (m) => `  ${fmtTime(m.xumo.startMs)}  ${escapeHtml(m.xumo.title ?? "?")}`
+  );
 
   outputEl.innerHTML = lines.join("\n");
 }
+
+// Holds the most recent comparison so the CSV button has something to
+// serialize; cleared whenever a new run starts.
+let lastReport = null;
+
+downloadBtn.addEventListener("click", () => {
+  if (!lastReport) return;
+  const blob = new Blob([buildComparisonCsv(lastReport)], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `epg_drift_${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
 
 runBtn.addEventListener("click", async () => {
   const apiKey = keyInput.value.trim();
@@ -149,6 +170,9 @@ runBtn.addEventListener("click", async () => {
   outputEl.innerHTML = "";
   channelEl.innerHTML = "";
   channelEl.className = "status";
+  statusEl.classList.remove("warn");
+  lastReport = null;
+  downloadBtn.disabled = true;
 
   if (!apiKey || !prgSvcId || !xmltvUrl || !startDate) {
     statusEl.textContent = "Need a Gracenote key, a prgSvcId, an XMLTV URL, and a start date.";
@@ -161,6 +185,7 @@ runBtn.addEventListener("click", async () => {
     return;
   }
 
+  runBtn.disabled = true;
   try {
     statusEl.textContent = "Fetching XMLTV…";
     const xmltvText = (await fetchViaProxy(xmltvUrl)).text;
@@ -187,10 +212,17 @@ runBtn.addEventListener("click", async () => {
     const report = compareSchedules(xumo.programmes, gn.programmes, { driftToleranceSeconds });
     renderReport(report, [...xumo.warnings, ...gn.warnings]);
 
+    lastReport = report;
+    downloadBtn.disabled = false;
+
     const s = report.summary;
     const clean = s.timeDrifts === 0 && s.tmsMismatches === 0 && s.onlyInXumo === 0 && s.onlyInGracenote === 0;
     statusEl.textContent = clean ? "No drift detected." : "Differences found — see below.";
+    statusEl.classList.toggle("warn", !clean);
   } catch (e) {
     statusEl.textContent = `Error: ${redact(e.message)}`;
+    statusEl.classList.add("warn");
+  } finally {
+    runBtn.disabled = false;
   }
 });

@@ -14,6 +14,7 @@ import {
   compareSchedules,
   compareChannelNames,
   gracenoteScheduleUrl,
+  buildComparisonCsv,
   addDays,
 } from "../../public/epg.js";
 
@@ -305,6 +306,53 @@ describe("compareChannelNames", () => {
 
   test("returns null (unknown) rather than false when a name is unavailable", () => {
     assert.equal(compareChannelNames(null, "FilmRise Horror").match, null);
+  });
+});
+
+describe("buildComparisonCsv", () => {
+  const xumo = parseXmltv(xmltvMovies).programmes;
+  const report = compareSchedules(xumo, parseGracenoteSchedule(gnDrift).programmes);
+  const csv = buildComparisonCsv(report);
+  const rows = csv.trim().split("\n");
+
+  test("emits a header plus one row per programme slot from both sides", () => {
+    assert.match(rows[0], /^status,xumo_start_utc,gracenote_start_utc,delta_seconds,title,/);
+    // 4 paired + 1 only-in-xumo
+    assert.equal(rows.length - 1, 5);
+  });
+
+  test("labels each row with its verdict", () => {
+    const statuses = rows.slice(1).map((r) => r.split(",")[0]);
+    assert.ok(statuses.includes("time-drift"));
+    assert.ok(statuses.includes("tms-mismatch"));
+    assert.ok(statuses.includes("no-tms-mapping"));
+    assert.ok(statuses.includes("only-in-xumo"));
+    assert.ok(statuses.includes("ok"));
+  });
+
+  test("quotes fields containing commas so the CSV can't be shifted by a title", () => {
+    const tricky = buildComparisonCsv({
+      matched: [
+        {
+          xumo: { startMs: 0, title: 'Movie, With "Commas"', tmsId: "MV1", programmeId: "XM1" },
+          gracenote: { startMs: 0, tmsId: "MV1", remoteId: "XM1" },
+          deltaSeconds: 0,
+          tmsComparable: true,
+          timeDrift: false,
+          tmsMismatch: false,
+          assetMismatch: false,
+        },
+      ],
+      onlyInXumo: [],
+      onlyInGracenote: [],
+    });
+    assert.match(tricky, /"Movie, With ""Commas"""/);
+    assert.equal(tricky.trim().split("\n").length, 2, "an embedded comma must not add a row");
+  });
+
+  test("an empty comparison still produces a valid header-only CSV", () => {
+    const empty = buildComparisonCsv({ matched: [], onlyInXumo: [], onlyInGracenote: [] });
+    assert.equal(empty.trim().split("\n").length, 1);
   });
 });
 

@@ -371,6 +371,59 @@ export function gracenoteSourceUrl({ apiKey, prgSvcId }) {
   return `https://on-api.gracenote.com/v3/Sources?${q}`;
 }
 
+// Flattens a comparison into CSV — one row per programme slot, both sides
+// side by side with a verdict. The original shell workflow's whole
+// deliverable was a CSV report, so this keeps that output available
+// rather than trapping the findings in a <pre>.
+export function buildComparisonCsv(report) {
+  const esc = (v) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const iso = (ms) => (ms === null || ms === undefined ? "" : new Date(ms).toISOString());
+
+  const rows = [
+    [
+      "status",
+      "xumo_start_utc",
+      "gracenote_start_utc",
+      "delta_seconds",
+      "title",
+      "xumo_tms_id",
+      "gracenote_tms_id",
+      "xumo_asset_id",
+      "gracenote_remote_id",
+    ],
+  ];
+
+  for (const m of report.matched) {
+    const status = !m.tmsComparable
+      ? "no-tms-mapping"
+      : [m.timeDrift && "time-drift", m.tmsMismatch && "tms-mismatch", m.assetMismatch && "asset-mismatch"]
+          .filter(Boolean)
+          .join("+") || "ok";
+    rows.push([
+      status,
+      iso(m.xumo.startMs),
+      iso(m.gracenote.startMs),
+      m.deltaSeconds,
+      m.xumo.title,
+      m.xumo.tmsId,
+      m.gracenote.tmsId,
+      m.xumo.programmeId,
+      m.gracenote.remoteId,
+    ]);
+  }
+  for (const p of report.onlyInXumo) {
+    rows.push(["only-in-xumo", iso(p.startMs), "", "", p.title, p.tmsId, "", p.programmeId, ""]);
+  }
+  for (const p of report.onlyInGracenote) {
+    rows.push(["only-in-gracenote", "", iso(p.startMs), "", "", "", p.tmsId, "", p.remoteId]);
+  }
+
+  return rows.map((r) => r.map(esc).join(",")).join("\n") + "\n";
+}
+
 // Gracenote takes plain YYYY-MM-DD bounds; <input type="date"> hands us
 // exactly that format regardless of the viewer's locale (see ROADMAP.md).
 export function addDays(dateStr, days) {
