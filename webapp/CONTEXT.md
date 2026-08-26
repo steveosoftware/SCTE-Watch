@@ -55,7 +55,7 @@ webapp/
   cdn-chain.js            CNAME-chain walker only (DNS-only, no SSRF surface) — naming which CDN(s) moved to cdn-fingerprint.js
   package.json            devDependency: playwright (tests only); npm scripts: start/test/test:e2e
   public/
-    index.html            page shell, four panels + glossary modal
+    index.html            page shell, five panels + glossary modal
     style.css              all styling (dark theme, minimalist)
     scte35.js              SCTE-35 binary decoder + HLS/DASH manifest parsing (pure logic, DOM-free — runs under plain Node)
     glossary.js             term definitions (SCTE-35 + hls.js error types/details) + safe HTML-escaping/linking helpers
@@ -67,13 +67,15 @@ webapp/
     app.js                   standalone "decode a SCTE-35 string" panel
     vast.js                  VAST/VMAP parsing + wrapper-chain resolution (pure logic, DOM-free, same style as scte35.js)
     vast-ui.js               standalone "validate a VAST/VMAP ad response" panel
+    epg.js                   XMLTV + Gracenote schedule parsing and the drift comparison (pure logic, DOM-free)
+    epg-ui.js                standalone "EPG drift" panel
   tests/
     fixtures/                committed HLS/DASH manifests + SCTE-35 payloads + VAST/VMAP fixtures (real captures + labeled synthetic ones)
     unit/                    node:test suites — one file roughly per scte35.js/glossary.js/net.js/ssrf-guard.js/vast.js concern
     e2e/playback.test.js     real headless-Chromium tests against a real spawned server.js
 ```
 
-## The four panels (top to bottom on the page)
+## The five panels (top to bottom on the page)
 
 ### 1. HLS & DASH Stream Tester
 - URL input (auto-detects HLS vs DASH by extension, or force either), Load & Play / Stop.
@@ -115,6 +117,17 @@ webapp/
 - **VMAP**: parses each `AdBreak` (type, `timeOffset`, id), then resolves its `AdSource` — either an inline `VASTAdData` (parsed directly) or an `AdTagURI` (fetched through the proxy) — following that ad break's own wrapper chain the same way a standalone VAST URL would.
 - Output shows the ad pod breakdown per the original ask: ad system, creative type (`Linear`/`Companion`/`NonLinear`), duration, media files (url/type/bitrate/dimensions), click-through/click-tracking, and which tracking events (start/quartiles/complete/etc.) are wired up — glossary-linked the same way manifest output is (`glossaryTerm()` on fixed vocabulary only — ad server content is at least as untrusted as CDN manifest content, same XSS-safety invariant).
 - `vast.js` is pure/DOM-free (regex against XML text, same style as `scte35.js`'s DASH parsing) — no `DOMParser` dependency, runs under plain Node for tests.
+
+### 5. EPG drift — Gracenote vs platform XMLTV (shipped 2026-08-26, Phase 4)
+- Diffs a **Gracenote On API v3 schedule** against the **platform's own XMLTV feed** for the same channel. Inputs: the user's own Gracenote API key, a `prgSvcId`, the **full XMLTV URL**, a start date, a window in days, and a drift tolerance.
+- **The key is the user's, never ours** — see the credential policy above. It's `type="password"`, held in module memory only, never persisted. It does transit `/api/fetch` inside the constructed Gracenote URL (unavoidable — `on-api.gracenote.com` sets no CORS headers), so every error path in `epg-ui.js` runs through `redact()` first, and an e2e test asserts the key never reaches the DOM.
+- **Inputs are the XMLTV URL, not a channel ID**: the Xumo channel ID is an *address* (it only picks which feed to fetch, and the URL needs the callsign alongside it), so the panel takes the whole URL and reads the channel id / display name back out of the document.
+- **Channel-pairing confirmation**: Gracenote's `/Sources` name and XMLTV's `<display-name>` are shown side by side with a ✓/⚠. Nothing in either feed connects the two ID systems, so pairing the wrong channels is easy — and its failure mode (a clean-looking ~0%-aligned report) reads as catastrophic drift rather than operator error. Non-blocking, since legitimate naming differences exist. A `/Sources` failure degrades to "couldn't confirm" rather than sinking the comparison.
+- **Pairs programmes on start time**, never on row position or program ID. Two-pointer merge over both sorted lists. TMS IDs deliberately are *not* the join key — a title airs several times a week, so they repeat within one feed (83 entries / 31 distinct on a real sample). `pairWindowSeconds` (default 300) decides what counts as the same slot; `driftToleranceSeconds` (default 0, user-editable) decides what counts as drift.
+- **Entries with no TMS mapping are reported, not counted as mismatches.** ~17% of a real movie channel carries no `<tms-id>` at all (alternate cuts — `[Broadcast Edit]`, director's cuts). Counting those as failures would permanently depress that channel's alignment score for no real fault, so they're excluded from the alignment denominator and listed separately. `alignmentPct` is `null` — not `0` — when nothing is comparable.
+- **One parser handles both channel types.** The original shell scripts branched on `//broadcast` vs `//event` after sniffing the first entry's `remoteId`; those XPaths actually describe the same tree (`<schedule prgSvcId date>` > `<event time dur TMSId>`), where stitched channels merely add a nested `<broadcast><id type="remoteId">`. Matching `<event>` and reading the optional nested id covers both, so the sniffing step is gone.
+- **Known unverified assumption**: `parseGracenoteTime()`'s handling of the `date`/`time` attribute serialization is inferred from the operator's scripts (which only ever string-compared those values, never parsed them) — the live Gracenote response has not been observed directly. It's deliberately tolerant (accepts `HH:MM`, `HH:MM:SS`, a trailing `Z`, an explicit offset; assumes UTC otherwise) and the Gracenote fixtures are labeled SYNTHETIC. **Verify against a real response the first time this runs with a live key.**
+- Gracenote `<error>` responses are surfaced verbatim rather than silently yielding an empty schedule.
 
 ## Click-to-glossary feature
 

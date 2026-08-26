@@ -96,6 +96,34 @@
     </div>
     <pre id="vast-output" class="log"></pre>
   </section>
+
+  <section class="panel" id="epg-panel">
+    <h2>EPG drift — Gracenote vs platform XMLTV</h2>
+    <div class="row">
+      <label for="epg-key">Gracenote API key</label>
+      <input id="epg-key" type="password" autocomplete="off" placeholder="your own key — never stored or sent anywhere but Gracenote">
+      <label for="epg-prgsvcid">prgSvcId</label>
+      <input id="epg-prgsvcid" type="text" class="narrow" placeholder="156201">
+    </div>
+    <div class="row">
+      <label for="epg-xmltv-url">XMLTV URL</label>
+      <input id="epg-xmltv-url" type="text" placeholder="https://carbon.xumo.com/epg/xmltv/88840011_XSNFH.xml">
+    </div>
+    <div class="row">
+      <label for="epg-date">Start date</label>
+      <input id="epg-date" type="date">
+      <label for="epg-days">Days</label>
+      <input id="epg-days" type="number" min="1" max="14" step="1" value="2" class="narrow">
+      <label for="epg-tolerance">Drift tolerance (s)</label>
+      <input id="epg-tolerance" type="number" min="0" step="1" value="0" class="narrow">
+      <button id="epg-run" class="secondary">Compare</button>
+      <span id="epg-status" class="status"></span>
+    </div>
+    <div class="row">
+      <span id="epg-channel" class="status"></span>
+    </div>
+    <pre id="epg-output" class="log"></pre>
+  </section>
 </main>
 <div id="glossary-modal" class="modal-overlay" hidden>
   <div class="modal-box">
@@ -110,6 +138,7 @@
 <script type="module" src="manifest-inspector.js"></script>
 <script type="module" src="app.js"></script>
 <script type="module" src="vast-ui.js"></script>
+<script type="module" src="epg-ui.js"></script>
 <script type="module" src="glossary-ui.js"></script>
 </body>
 </html>

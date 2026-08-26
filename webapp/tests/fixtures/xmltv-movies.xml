@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<!-- Trimmed from the real feed (FilmRise Horror 88840011_XSNFH). Full feed is ~369KB; 5 programmes kept. -->
+<tv date="2026-08-26" source-info-url="https://carbon.xumo.com/epg/xmltv/88840011_XSNFH.xml" source-info-name="Xumo" generator-info-name="Xumo XMLTV">
+    <channel id="88840011">
+        <display-name>FilmRise Horror</display-name>
+        <icon src="https://image.xumo.com/v1/channels/channel/88840011/1920x1080.png?type=ident&amp;crop=1920x1080,1920x1080,Center"/>
+    </channel>
+    <programme start="20260825225917 +0000" stop="20260826004230 +0000" channel="88840011">
+        <title>Raging Sharks</title>
+        <tms-id>MV001824280000</tms-id>
+        <programme-id>XM03Z0K05Q9CN4</programme-id>
+    </programme>
+    <programme start="20260826004230 +0000" stop="20260826021937 +0000" channel="88840011">
+        <title>Maneater</title>
+        <tms-id>MV001946210000</tms-id>
+        <programme-id>XM0TLMJI3110XZ</programme-id>
+    </programme>
+    <programme start="20260826021937 +0000" stop="20260826040000 +0000" channel="88840011">
+        <title>House (1985) [Broadcast Edit]</title>
+        <programme-id>XM0MA34LLB2ARR</programme-id>
+    </programme>
+    <programme start="20260826040000 +0000" stop="20260826053423 +0000" channel="88840011">
+        <title>Black Sabbath</title>
+        <tms-id>MV000026650000</tms-id>
+        <programme-id>XM0OAPIELO55UX</programme-id>
+    </programme>
+    <programme start="20260826053423 +0000" stop="20260826072311 +0000" channel="88840011">
+        <title>Living Dark: The Story of Ted the Caver</title>
+        <tms-id>MV005663710000</tms-id>
+        <programme-id>XM02GTFNSBA0W7</programme-id>
+    </programme>
+</tv>

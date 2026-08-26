@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC. Structure inferred from the operator's scripts' XPaths;
+     the live Gracenote response has not been observed directly. Deliberately drifted vs xmltv-movies.xml: entry 1 starts 90s late, entry 3 has a different TMSId, entry 4 is missing entirely. -->
+<schedules>
+  <schedule prgSvcId="156201" date="2026-08-25" updateDate="2026-08-25">
+    <event time="22:59:17" dur="6193" TMSId="MV001824280000">
+      <broadcast><id type="remoteId">XM03Z0K05Q9CN4</id></broadcast>
+    </event>
+  </schedule>
+  <schedule prgSvcId="156201" date="2026-08-26" updateDate="2026-08-26">
+    <event time="00:44:00" dur="5827" TMSId="MV001946210000">
+      <broadcast><id type="remoteId">XM0TLMJI3110XZ</id></broadcast>
+    </event>
+    <event time="02:19:37" dur="6023" TMSId="MV009999990000">
+      <broadcast><id type="remoteId">XM0MA34LLB2ARR</id></broadcast>
+    </event>
+    <event time="04:00:00" dur="5663" TMSId="MV0DIFFERENT00">
+      <broadcast><id type="remoteId">XM0OAPIELO55UX</id></broadcast>
+    </event>
+  </schedule>
+</schedules>

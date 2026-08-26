@@ -19,7 +19,7 @@ Update this alongside `CONTEXT.md` as items land.
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
 5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
-6. **Gracenote EPG drift detection — unblocked** (2026-08-19). API query shape confirmed from operator's existing local scripts; not yet built. See its own section below (moved out of "Blocked").
+6. ~~**Gracenote EPG drift detection.**~~ **Done** (2026-08-26) — shipped as the EPG drift panel. See its own section below for the design record and the one unverified assumption.
 
 ---
 
@@ -113,7 +113,7 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 
 ---
 
-## Gracenote EPG drift detection — unblocked, not yet built
+## Gracenote EPG drift detection ✅ Done (2026-08-26)
 
 **API shape confirmed** (2026-08-19) from a set of working Bash scripts the operator already runs for a related manual QA process (comparing Gracenote's outbound schedule against platform exports) — reviewed and summarized here, not committed to the repo (they contain a live API key; see security note below).
 
@@ -173,9 +173,24 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 
 **Still user-supplied: the channel-ID mapping.** XMLTV identifies the channel by **Xumo** channel ID (`88840011`); Gracenote identifies it by `prgSvcId` (`156201`). Neither feed carries the other's identifier, so the panel needs both from the user — exactly as the old scripts took `prgSvcId` and `callsign` as separate arguments.
 
+**5. Inputs are the full XMLTV URL + the Gracenote ID** (decided 2026-08-26). The Xumo channel ID is an *address*, not a join key — it only selects which feed to fetch, and the feed URL needs the callsign alongside it (`88840011` + `XSNFH`). Asking for both pieces separately would be two inputs to build one URL, and brittle if Xumo changes the path pattern. So the panel takes the **whole XMLTV URL** pasted in, and reads the channel id / display name back *out* of the fetched document.
+
+**6. Channel-pairing guardrail.** Because the two IDs are unverified user assertions, pairing the wrong two channels yields a clean-looking ~0%-aligned report that reads as catastrophic drift but is really just operator error. Cheap to catch: Gracenote `/Sources?prgSvcId=` returns a channel `<name>`, XMLTV carries `<display-name>`. Compare them and surface both names as a **confirmation signal** to the user, warning on mismatch. Non-blocking (legitimate naming differences exist), but it turns a silently-misleading report into an obviously-suspect one.
+
 **The two `*_cms.json` files are not EPG data** and aren't part of this feature. They're Roku CMS channel manifests — `providerName`/`categories`/`playlists`/`liveFeeds[]`, where `liveFeeds[]` carries channel id, title, advisory rating, thumbnail, description, and **the HLS master URL**. No programme listings, no times, no TMS IDs; the two samples describe different channels (`88884008`, `88884125`) than the XMLTV samples. Worth remembering separately though: they map a channel to its playable HLS master, which is a plausible future convenience (pick a channel → auto-fill the Stream Tester URL), just unrelated to drift detection.
 
-**Test fixtures**: the live samples are 378KB/915KB — too big to commit as-is. Trim to ~5 programmes each (one movie file, one series file including an entry with a missing `tms-id`) when building this.
+### Shipped 2026-08-26
+
+`public/epg.js` (pure parsing + comparison) and `public/epg-ui.js` (the panel). All six decisions above were built as specified. Implementation notes worth keeping:
+
+- **One parser, not two branches.** The shell scripts sniffed the first entry's `remoteId` to choose between `//broadcast` and `//event` XPaths — but those describe the *same* tree (`<schedule prgSvcId date>` > `<event time dur TMSId>`), with stitched channels merely adding a nested `<broadcast><id type="remoteId">`. Matching `<event>` and reading the optional nested id handles both, so the sniffing step (and the bug where the two branches disagreed on a filename) simply doesn't exist here.
+- **Pairing is a linear two-pointer merge** over both start-sorted lists. `pairWindowSeconds` (default 300) decides what counts as the same slot; `driftToleranceSeconds` (default 0, exposed in the UI) decides what counts as drift. Separating those two knobs matters — one generous window to *identify* a pair, one strict threshold to *judge* it.
+- **`alignmentPct` is `null`, never `0`,** when nothing is comparable — a 0% would read as total failure rather than "no data."
+- **Test coverage**: 46 unit tests (`tests/unit/epg.test.js`) plus 4 e2e tests in the offline tier, including one asserting the API key never reaches the DOM. XMLTV fixtures are trimmed from the real feeds (`xmltv-movies.xml` deliberately keeps an entry with no `tms-id`); Gracenote fixtures are clearly labeled **SYNTHETIC**.
+
+**⚠ The one unverified assumption.** `parseGracenoteTime()`'s handling of the `date`/`time` attribute serialization is *inferred* from the operator's scripts, which only ever string-compared those values and never parsed them — a live Gracenote response has never been observed directly. The parser is deliberately tolerant (accepts `HH:MM`, `HH:MM:SS`, trailing `Z`, explicit offset; assumes UTC otherwise) and Gracenote `<error>` bodies are surfaced verbatim rather than silently yielding an empty schedule. **Verify against a real response the first time this runs with a live key**, and replace the synthetic fixtures with a real (key-stripped) capture at that point.
+
+**Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — still a bonus, still unbuilt.
 
 ---
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SYNTHETIC. Structure inferred from the operator's scripts' XPaths;
+     the live Gracenote response has not been observed directly. Simulcast: bare <event>, no nested <broadcast>. Same data otherwise, to prove one parser handles both shapes. -->
+<schedules>
+  <schedule prgSvcId="156201" date="2026-08-25" updateDate="2026-08-25">
+    <event time="22:59:17" dur="6193" TMSId="MV001824280000"/>
+  </schedule>
+  <schedule prgSvcId="156201" date="2026-08-26" updateDate="2026-08-26">
+    <event time="00:42:30" dur="5827" TMSId="MV001946210000"/>
+    <event time="02:19:37" dur="6023" TMSId="MV009999990000"/>
+    <event time="04:00:00" dur="5663" TMSId="MV000026650000"/>
+    <event time="05:34:23" dur="6528" TMSId="MV005663710000"/>
+  </schedule>
+</schedules>

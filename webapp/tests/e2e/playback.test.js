@@ -176,6 +176,106 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  // The XMLTV side goes through the REAL /api/fetch proxy against the local
+  // fixture server; only the Gracenote calls are stubbed, since hitting the
+  // live API would need a real key. That keeps the proxy -> parse -> compare
+  // -> render path genuinely exercised end to end.
+  async function stubGracenote(page, scheduleFixture, sourceName = "FilmRise Horror") {
+    const schedule = readFileSync(path.join(FIXTURES_DIR, scheduleFixture), "utf8");
+    await page.route("**/api/fetch**", async (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const reply = (text) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ text, finalUrl: target, headers: {} }),
+        });
+      if (target.includes("on-api.gracenote.com/v3/Schedules")) return reply(schedule);
+      if (target.includes("on-api.gracenote.com/v3/Sources")) {
+        return reply(`<sources><source><name>${sourceName}</name></source></sources>`);
+      }
+      return route.continue();
+    });
+  }
+
+  async function runEpgCompare(page, { scheduleFixture, sourceName }) {
+    await stubGracenote(page, scheduleFixture, sourceName);
+    await page.goto(BASE_URL);
+    await page.fill("#epg-key", "TEST-SECRET-KEY");
+    await page.fill("#epg-prgsvcid", "156201");
+    await page.fill("#epg-xmltv-url", `http://127.0.0.1:${FIXTURE_SERVER_PORT}/xmltv-movies.xml`);
+    await page.fill("#epg-date", "2026-08-25");
+    await page.click("#epg-run");
+    await page.waitForFunction(() => {
+      const t = document.getElementById("epg-status")?.textContent || "";
+      return t.includes("drift") || t.includes("Differences") || t.includes("Error");
+    }, { timeout: 15000 });
+  }
+
+  test("EPG drift: a clean channel reports no drift and confirms the channel pairing", async () => {
+    const { page } = await newPage();
+    await runEpgCompare(page, { scheduleFixture: "gracenote-schedule-stitched.xml" });
+
+    assert.equal(await page.textContent("#epg-status"), "No drift detected.");
+
+    const channel = await page.textContent("#epg-channel");
+    assert.match(channel, /FilmRise Horror/);
+    assert.match(channel, /same channel/, "matching names should read as a positive confirmation");
+
+    const out = await page.textContent("#epg-output");
+    assert.match(out, /paired on start\s*:\s*5/);
+    assert.match(out, /alignment\s*:\s*100%/);
+    // the alternate-cut entry must be surfaced as unmapped, not as a mismatch
+    assert.match(out, /no TMS mapping\s*:\s*1/);
+    assert.match(out, /House \(1985\)/);
+
+    await page.close();
+  });
+
+  test("EPG drift: real differences are detected and itemized", async () => {
+    const { page } = await newPage();
+    await runEpgCompare(page, { scheduleFixture: "gracenote-schedule-drift.xml" });
+
+    assert.equal(await page.textContent("#epg-status"), "Differences found — see below.");
+    const out = await page.textContent("#epg-output");
+    assert.match(out, /start-time drift\s*:\s*1/);
+    assert.match(out, /Maneater/);
+    assert.match(out, /-90s/, "the signed drift size should be shown");
+    assert.match(out, /MV0DIFFERENT00/, "the conflicting TMS id should be shown");
+    assert.match(out, /ONLY IN XUMO \(1\)/);
+    assert.match(out, /Living Dark/);
+
+    await page.close();
+  });
+
+  test("EPG drift: mismatched channel names raise the mispairing warning", async () => {
+    const { page } = await newPage();
+    await runEpgCompare(page, {
+      scheduleFixture: "gracenote-schedule-stitched.xml",
+      sourceName: "Forensic Files", // wrong channel for this XMLTV feed
+    });
+
+    const channel = await page.textContent("#epg-channel");
+    assert.match(channel, /names differ/, "pairing the wrong channels must be called out");
+    assert.match(channel, /Forensic Files/);
+    assert.match(channel, /FilmRise Horror/);
+
+    await page.close();
+  });
+
+  test("SECURITY: the Gracenote API key never reaches the rendered page", async () => {
+    const { page } = await newPage();
+    await runEpgCompare(page, { scheduleFixture: "gracenote-schedule-stitched.xml" });
+
+    const html = await page.content();
+    assert.ok(!html.includes("TEST-SECRET-KEY"), "the key must not be echoed into the DOM");
+    // and it must still be held only in the input the user typed it into
+    const inputType = await page.getAttribute("#epg-key", "type");
+    assert.equal(inputType, "password");
+
+    await page.close();
+  });
+
   test("DASH out-of-band SCTE-35: EventStream signal is detected and decoded in the real UI", async () => {
     const { page } = await newPage();
     await page.goto(BASE_URL);

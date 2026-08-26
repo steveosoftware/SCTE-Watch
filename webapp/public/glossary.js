@@ -144,6 +144,15 @@ export const GLOSSARY = {
   AdBreak: "A VMAP element describing one ad slot in the content — when it occurs (timeOffset) and what type (linear video, nonlinear overlay, display).",
   AdSystem: "Identifies which ad server/platform generated this VAST response.",
 
+  // EPG / schedule-drift vocabulary
+  EPG: "Electronic Program Guide — the schedule data saying what airs on a channel and when. Drift means two sources of it (or a source and the actual stream) disagree.",
+  XMLTV: "A long-standing open XML format for TV listings — a <channel> plus a series of <programme start stop> entries. What the platform publishes its own schedule in.",
+  "TMS ID": "Gracenote's canonical program identifier, prefixed by content type: EP (episode), SH (show), MV (movie). The shared vocabulary between a platform's schedule and Gracenote's — but it repeats within a schedule, since the same title airs multiple times, so it identifies the *program*, not the *airing*.",
+  prgSvcId: "Gracenote's identifier for a channel (program service). Unrelated to, and not derivable from, the platform's own channel ID — which is why a comparison needs both.",
+  remoteId: "In a Gracenote schedule, the platform's own asset ID for an airing, echoed back. Present on stitched channels; the counterpart to the XMLTV feed's <programme-id>.",
+  "start-time drift": "The same programme scheduled at different times by the two sources. Small drift usually means a rounding or ingest-timing difference; large or growing drift means the schedules have genuinely diverged.",
+  "no TMS mapping": "A programme the platform lists with no Gracenote TMS ID at all — common for alternate cuts (broadcast edits, director's cuts). Reported separately rather than counted as a mismatch, since counting it would permanently depress a channel's alignment score for no real fault.",
+
   // hls.js ErrorTypes — the broad category each error falls under.
   networkError: "Something failed while fetching a manifest, segment, or key over the network — a download problem, not a decode problem.",
   mediaError: "The browser's Media Source Extensions (MSE) pipeline rejected or choked on data after it was downloaded — a decode/buffering problem, not a network problem.",

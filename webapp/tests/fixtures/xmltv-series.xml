@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<!-- Trimmed from the real feed (Forensic Files 88840016_XSNFF). Full feed is ~893KB; 5 programmes kept. -->
+<tv date="2026-08-26" source-info-url="https://carbon.xumo.com/epg/xmltv/88840016_XSNFF.xml" source-info-name="Xumo" generator-info-name="Xumo XMLTV">
+    <channel id="88840016">
+        <display-name>Forensic Files</display-name>
+        <icon src="https://image.xumo.com/v1/channels/channel/88840016/1920x1080.png?type=ident&amp;crop=1920x1080,1920x1080,Center"/>
+    </channel>
+    <programme start="20260825233926 +0000" stop="20260826000821 +0000" channel="88840016">
+        <title>Forensic Files</title>
+        <sub-title>Shopping Spree</sub-title>
+        <tms-id>EP022439260403</tms-id>
+        <series-id>XM0A4OXFGAJUSX</series-id>
+        <programme-id>XM0UTZZ0YQBC8H</programme-id>
+        <episode-num system="xmltv_ns">5.29.0</episode-num>
+        <episode-num system="onscreen">S6E30</episode-num>
+    </programme>
+    <programme start="20260826000821 +0000" stop="20260826003740 +0000" channel="88840016">
+        <title>Forensic Files</title>
+        <sub-title>Raw Terror</sub-title>
+        <tms-id>EP022439260161</tms-id>
+        <series-id>XM0A4OXFGAJUSX</series-id>
+        <programme-id>XM01VWQOY8A1R0</programme-id>
+        <episode-num system="xmltv_ns">0.12.0</episode-num>
+        <episode-num system="onscreen">S1E13</episode-num>
+    </programme>
+    <programme start="20260826003740 +0000" stop="20260826010544 +0000" channel="88840016">
+        <title>Forensic Files</title>
+        <sub-title>Hot on the Trail</sub-title>
+        <tms-id>EP022439260320</tms-id>
+        <series-id>XM0A4OXFGAJUSX</series-id>
+        <programme-id>XM0SWXZ1PZL6JG</programme-id>
+        <episode-num system="xmltv_ns">9.36.0</episode-num>
+        <episode-num system="onscreen">S10E37</episode-num>
+    </programme>
+    <programme start="20260826010544 +0000" stop="20260826013347 +0000" channel="88840016">
+        <title>Forensic Files</title>
+        <sub-title>Up in Smoke</sub-title>
+        <tms-id>EP022439260331</tms-id>
+        <series-id>XM0A4OXFGAJUSX</series-id>
+        <programme-id>XM03WIBW0SFWUF</programme-id>
+        <episode-num system="xmltv_ns">9.3.0</episode-num>
+        <episode-num system="onscreen">S10E4</episode-num>
+    </programme>
+    <programme start="20260826013347 +0000" stop="20260826020244 +0000" channel="88840016">
+        <title>Forensic Files</title>
+        <sub-title>Ghost in the Machine</sub-title>
+        <tms-id>EP022439260247</tms-id>
+        <series-id>XM0A4OXFGAJUSX</series-id>
+        <programme-id>XM0F0U5LQOGTLA</programme-id>
+        <episode-num system="xmltv_ns">6.20.0</episode-num>
+        <episode-num system="onscreen">S7E21</episode-num>
+    </programme>
+</tv>
