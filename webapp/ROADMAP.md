@@ -19,7 +19,7 @@ Update this alongside `CONTEXT.md` as items land.
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
 5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
-6. ~~**Gracenote EPG drift detection.**~~ **Done** (2026-08-26) — shipped as the EPG drift panel. See its own section below for the design record and the one unverified assumption.
+6. ~~**Gracenote EPG drift detection.**~~ **Done** (2026-08-26) — shipped as the EPG drift panel. **Two open items pending the operator**: which credential/transport actually applies (REST `api_key` vs FTP), and verifying the Gracenote date/time parsing against a real response. See its own section below.
 
 ---
 
@@ -187,6 +187,17 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 - **Pairing is a linear two-pointer merge** over both start-sorted lists. `pairWindowSeconds` (default 300) decides what counts as the same slot; `driftToleranceSeconds` (default 0, exposed in the UI) decides what counts as drift. Separating those two knobs matters — one generous window to *identify* a pair, one strict threshold to *judge* it.
 - **`alignmentPct` is `null`, never `0`,** when nothing is comparable — a 0% would read as total failure rather than "no data."
 - **Test coverage**: 46 unit tests (`tests/unit/epg.test.js`) plus 4 e2e tests in the offline tier, including one asserting the API key never reaches the DOM. XMLTV fixtures are trimmed from the real feeds (`xmltv-movies.xml` deliberately keeps an entry with no `tms-id`); Gracenote fixtures are clearly labeled **SYNTHETIC**.
+
+**⚠ Open — which Gracenote credential/transport actually applies (raised 2026-08-26, awaiting operator).** The operator mentioned Gracenote access being "a user and a password for the FTP connection," which does not match what the reference scripts do. Unresolved; do not rework the panel's auth until this is settled.
+
+- **What's evidenced today**: all six scripts authenticate solely with `api_key` over HTTPS to `on-api.gracenote.com/v3` — no FTP, no username/password anywhere in them. That path is confirmed *live*: a real request during testing returned a valid Gracenote XML error document, so the endpoint and key both function.
+- **Why this isn't a swap of auth headers.** FTP would need a genuinely different data path:
+  - Browsers removed FTP entirely (Chrome 88 / Firefox 90, 2021) — `fetch("ftp://…")` does not exist client-side.
+  - `ssrf-guard.js` rejects any non-http/https protocol by design, and Node's built-in `fetch()` has no FTP support — so the proxy can't carry it either. It would require a real FTP client dependency in the Lambda, breaking the project's zero-runtime-dependency property.
+  - Credential posture degrades sharply: an `api_key` is a scoped, revocable token (fine for "paste your own"), whereas FTP credentials are typically a full account login. Routing those through our infrastructure is a materially different risk from what the credential policy in CONTEXT.md was written for.
+  - The data model differs too — FTP delivery is bulk file drops, not per-channel/date-window queries. That's a different feature, not a variant of this one.
+- **If FTP turns out to be the path**, the recommended shape is: the operator pulls the files down themselves and the panel accepts an uploaded/pasted file, keeping credentials off our infrastructure entirely. Preferred even if the FTP connection were technically possible.
+- **Most likely resolution** (unconfirmed): the operator has both — the REST API for queries and a separate FTP drop for bulk delivery — in which case the panel as built is already correct and the FTP is an unrelated pipeline.
 
 **⚠ The one unverified assumption.** `parseGracenoteTime()`'s handling of the `date`/`time` attribute serialization is *inferred* from the operator's scripts, which only ever string-compared those values and never parsed them — a live Gracenote response has never been observed directly. The parser is deliberately tolerant (accepts `HH:MM`, `HH:MM:SS`, trailing `Z`, explicit offset; assumes UTC otherwise) and Gracenote `<error>` bodies are surfaced verbatim rather than silently yielding an empty schedule. **Verify against a real response the first time this runs with a live key**, and replace the synthetic fixtures with a real (key-stripped) capture at that point.
 
