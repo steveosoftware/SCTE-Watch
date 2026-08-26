@@ -145,7 +145,37 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 
 **4. Date inputs use `<input type="date">`.** Requested 2026-08-20: the panel needs to either show the expected date format or give a calendar picker. The native date input does both at once and is the right call — it renders a calendar dropdown, and the browser guarantees its `.value` is always `YYYY-MM-DD` no matter what locale-specific format it *displays* to the user (a US viewer sees `08/24/2023`; the value is still `2023-08-24`). That's exactly the format Gracenote's `startDate`/`endDate` want, so there's no parsing, no formatting, and no "enter dates as YYYY-MM-DD" helper text to write or keep accurate. Worth knowing this is browser-native behavior we're leaning on deliberately, not an accident — don't "helpfully" swap it for a text input later.
 
-**Still open — where the platform EPG export comes from.** The reference script only ever *reads* `~/Downloads/{callsign}_{YYYYMMDD}.xml`; nothing in the toolchain fetches or generates it, and the `~/Downloads` location plus date-stamped filename suggests a manual download from some web UI. Operator is identifying the source (2026-08-20). This decides the panel's input design: a fetchable URL means both sides go through the proxy fully automated; a manual export means that side needs file-upload/paste-XML. Inferred schema, from the script's XPath — `<Schedule>` elements carrying `AffiliateStation`/`CalendarDT`/`StartTime`/`EndTime`/`Duration`/`Caption`, nested two levels under a record carrying `StationProgramID`/`ProgramTitle`/`Runtime`.
+### Platform EPG source — resolved 2026-08-25
+
+**It's a fetchable URL, so both sides automate.** No file-upload input needed; the panel takes a Xumo XMLTV URL and pulls it through the existing `/api/fetch` proxy alongside the Gracenote call. (This supersedes the earlier open question about the manual `~/Downloads/{callsign}_{YYYYMMDD}.xml` export — that file was presumably a hand-saved copy of one of these feeds, and its `AffiliateStation`/`CalendarDT`/`StationProgramID` schema is *not* what the live feeds serve.)
+
+**Format is standard XMLTV**, `https://carbon.xumo.com/epg/xmltv/{xumoChannelId}_{callsign}.xml`. Samples reviewed: `88840011_XSNFH` (FilmRise Horror, movies) and `88840016_XSNFF` (Forensic Files, series).
+
+- Root `<tv date="…">`, one `<channel id="…">` with `<display-name>`, then `<programme start="…" stop="…" channel="…">` entries.
+- Times are XMLTV format — `20260825225917 +0000` (`YYYYMMDDHHMMSS ±ZZZZ`), UTC in these samples.
+- **~7 days of schedule per file** (173h and 152h in the samples), and **perfectly contiguous** — every programme's `stop` equals the next one's `start`, zero gaps or overlaps.
+
+**Join keys, in order of usefulness:**
+
+| Field | Example | Notes |
+|---|---|---|
+| `start` attribute | `20260825225917 +0000` | **Unique within a file** (verified on both samples). This is the join key. |
+| `<programme-id>` | `XM03Z0K05Q9CN4` | Xumo asset ID. 100% present, always `XM`-prefixed — this is what Gracenote returns as `id[@type='remoteId']` on stitched channels, i.e. the thing the old script's asset check was reaching for. |
+| `<tms-id>` | `MV001824280000`, `EP022439260403` | Gracenote TMS ID, same `EP`/`SH`/`MV` prefix convention the Gracenote scripts already key off. |
+| `<external-id system="xumo">` | `XM03Z0K05Q9CN4` | Duplicate of `programme-id` in both samples. |
+
+**Two findings that directly shape the comparison logic:**
+
+1. **TMS IDs repeat — do not join on them.** The movie channel has 83 TMS IDs but only **31 distinct** (a title airs several times a week); the series channel, 324 entries and 232 distinct. Start time is the only unique key. This independently confirms the fix already flagged above: **join on start time**, never on row position or program ID.
+2. **17% of the movie channel has no `tms-id` at all** — 17 of 100 entries, spanning 7 distinct titles, all alternate cuts (`[Broadcast Edit]`, `Director's Cut`). The series channel has 100% coverage. These are a legitimate data gap, not corruption, so the comparison must report them as **"no TMS mapping"** rather than counting them as mismatches — otherwise a movie channel's alignment score is permanently and misleadingly wrong.
+
+**Movies vs series field differences** (the "slight format difference"): series programmes additionally carry `<sub-title>`, `<date>` (original air date), `<series-id>`, `<series-description>`, and two `<episode-num>` systems (`xmltv_ns` zero-based `5.29.0`, `onscreen` `S6E30`). Movie programmes have none of those. Everything else — `title`, `desc`, `credits`, `category`, `keyword`, `rating`, `icon`, and the ID fields above — is common to both. A parser should treat the episode/series block as optional rather than branching on content type.
+
+**Still user-supplied: the channel-ID mapping.** XMLTV identifies the channel by **Xumo** channel ID (`88840011`); Gracenote identifies it by `prgSvcId` (`156201`). Neither feed carries the other's identifier, so the panel needs both from the user — exactly as the old scripts took `prgSvcId` and `callsign` as separate arguments.
+
+**The two `*_cms.json` files are not EPG data** and aren't part of this feature. They're Roku CMS channel manifests — `providerName`/`categories`/`playlists`/`liveFeeds[]`, where `liveFeeds[]` carries channel id, title, advisory rating, thumbnail, description, and **the HLS master URL**. No programme listings, no times, no TMS IDs; the two samples describe different channels (`88884008`, `88884125`) than the XMLTV samples. Worth remembering separately though: they map a channel to its playable HLS master, which is a plausible future convenience (pick a channel → auto-fill the Stream Tester URL), just unrelated to drift detection.
+
+**Test fixtures**: the live samples are 378KB/915KB — too big to commit as-is. Trim to ~5 programmes each (one movie file, one series file including an entry with a missing `tms-id`) when building this.
 
 ---
 
