@@ -6,7 +6,9 @@ No AI/Claude/Anthropic branding anywhere in this project — keep it that way (n
 
 ## Repo state
 
-Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (still just the initial commit — stale, not what's deployed), `staging` (tracks `origin/staging`, fast-forwarded to match `roadmap` as of 2026-08-18), and `roadmap` (tracks `origin/roadmap` — **this is the active working branch**; Phases 0–3, the VAST/VMAP validator, and the EPG drift panel all landed here). Working tree clean and fully pushed as of 2026-08-28. `staging` has NOT been fast-forwarded since 2026-08-18, so it is now well behind.
+Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (still just the initial commit — stale, not what's deployed), `staging` (tracks `origin/staging`), and `roadmap` (tracks `origin/roadmap` — **this is the active working branch**; Phases 0–3, the VAST/VMAP validator, and the EPG drift panel all landed here).
+
+**As of 2026-08-28 `staging` and `roadmap` are identical** (`df52d77`) — staging was 21 commits behind and fast-forwarded, no divergence, nothing lost. Working tree clean and fully pushed. `main` is untouched and still a single commit; nothing deploys from it.
 
 Latest push to `roadmap` (2026-08-28, second session that day) added, all in the EPG panel unless noted: schedule printing (**Print schedule** + schedule CSV), the panel moved above VAST/VMAP, the Gracenote key remembered in `localStorage` behind an opt-out, a **How it works** explainer modal (new reusable `explainer-ui.js`), a widened Stream URL input in the tester panel, corrected PROGRAM-DATE-TIME wording, and green/red colour-coded verdicts. Each has its own dated entry in ROADMAP.md with the reasoning.
 
