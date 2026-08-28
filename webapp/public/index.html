@@ -85,20 +85,10 @@
     <pre id="decode-output" class="log small"></pre>
   </section>
 
-  <section class="panel" id="vast-panel">
-    <h2>Validate a VAST/VMAP ad response</h2>
-    <div class="row">
-      <textarea id="vast-input" placeholder="Paste a VAST/VMAP URL, or raw VAST/VMAP XML"></textarea>
-    </div>
-    <div class="row">
-      <button id="vast-btn" class="secondary">Validate</button>
-      <span id="vast-status" class="status"></span>
-    </div>
-    <pre id="vast-output" class="log"></pre>
-  </section>
-
   <section class="panel" id="epg-panel">
-    <h2>EPG drift — what&#39;s playing vs what&#39;s scheduled</h2>
+    <h2>EPG drift — what&#39;s playing vs what&#39;s scheduled
+      <button type="button" class="explainer-btn" data-explainer="epg-explainer">How it works</button>
+    </h2>
     <div class="row">
       <label for="epg-playback-url">Playback URL</label>
       <input id="epg-playback-url" type="text" placeholder="https://.../master.m3u8 — the linear channel to watch">
@@ -113,7 +103,8 @@
     </div>
     <div class="row" id="epg-gracenote-fields">
       <label for="epg-key">API key</label>
-      <input id="epg-key" type="password" autocomplete="off" placeholder="your own key — never stored">
+      <input id="epg-key" type="password" autocomplete="off" placeholder="your own key">
+      <label class="checkbox" for="epg-remember-key"><input type="checkbox" id="epg-remember-key" checked> Remember in this browser</label>
       <label for="epg-prgsvcid">prgSvcId</label>
       <input id="epg-prgsvcid" type="text" class="narrow" placeholder="156201">
       <label for="epg-date">From</label>
@@ -128,15 +119,39 @@
     <div class="row">
       <button id="epg-run">Start</button>
       <button id="epg-stop" class="secondary" disabled>Stop</button>
-      <button id="epg-download" class="secondary" disabled>Download CSV</button>
+      <button id="epg-download" class="secondary" disabled>Download drift CSV</button>
       <span id="epg-status" class="status"></span>
+    </div>
+    <div class="row">
+      <button id="epg-print" class="secondary">Print schedule</button>
+      <button id="epg-download-schedule" class="secondary" disabled>Download schedule CSV</button>
+      <span class="note">Lists the channel&#39;s airings on their own — no playback URL needed.</span>
     </div>
     <div class="row">
       <span id="epg-verdict" class="status"></span>
     </div>
     <pre id="epg-output" class="log"></pre>
   </section>
+
+  <section class="panel" id="vast-panel">
+    <h2>Validate a VAST/VMAP ad response</h2>
+    <div class="row">
+      <textarea id="vast-input" placeholder="Paste a VAST/VMAP URL, or raw VAST/VMAP XML"></textarea>
+    </div>
+    <div class="row">
+      <button id="vast-btn" class="secondary">Validate</button>
+      <span id="vast-status" class="status"></span>
+    </div>
+    <pre id="vast-output" class="log"></pre>
+  </section>
 </main>
+<div id="explainer-modal" class="modal-overlay" hidden>
+  <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="explainer-modal-title">
+    <button id="explainer-modal-close" class="modal-close" type="button" aria-label="Close">&times;</button>
+    <h3 id="explainer-modal-title"></h3>
+    <div id="explainer-modal-body" class="explainer-body"></div>
+  </div>
+</div>
 <div id="glossary-modal" class="modal-overlay" hidden>
   <div class="modal-box">
     <button id="glossary-modal-close" class="modal-close" type="button" aria-label="Close">&times;</button>
@@ -144,6 +159,115 @@
     <p id="glossary-modal-def"></p>
   </div>
 </div>
+
+<template id="epg-explainer" data-title="EPG drift — how it works">
+  <h4>What it checks</h4>
+  <p>
+    It compares the <strong>stream</strong> against a schedule — not two schedules against each other.
+    Two metadata sources can agree perfectly while the channel plays the wrong thing; only the stream
+    answers &ldquo;is the right asset on air right now?&rdquo;
+  </p>
+
+  <h4>Where the asset id comes from</h4>
+  <p>
+    Out of the segment path, not the hostname:
+  </p>
+  <pre>https://live-content-cf.xumo.com/149/content/<b>XM05M7E0PC09SI</b>/28980908/6_004.ts</pre>
+  <p>
+    That <code>XM…</code> id is the same namespace as XMLTV&rsquo;s <code>&lt;programme-id&gt;</code> and
+    Gracenote&rsquo;s <code>remoteId</code>, which is what makes the join possible.
+  </p>
+
+  <h4>Why it polls</h4>
+  <p>
+    It polls in case there is no wallclock anchor in the manifest. Plenty of streams do publish
+    <code>#EXT-X-PROGRAM-DATE-TIME</code> — at the top of the playlist, or against every segment — but
+    plenty don&rsquo;t, and the panel can&rsquo;t assume one is there. The instant it can always observe is
+    &ldquo;now&rdquo; at the live edge: a single check gives a yes/no, and watching across polls catches the
+    asset transition and turns it into a drift figure.
+  </p>
+  <p>
+    The timeline is interpolated backwards from that live edge — the last segment&rsquo;s end anchored at
+    now, then <code>#EXTINF</code> durations accumulated backwards — which puts times within about
+    <strong>±1 segment</strong>, so a figure like <code>+503s</code> is not second-accurate. Note this is
+    how it works <em>whether or not</em> the stream carries a PDT: the panel doesn&rsquo;t read one yet.
+    Where a stream does publish PDT, anchoring on it would be exact rather than estimated.
+  </p>
+
+  <h4>When a new line appears in the log</h4>
+  <p>
+    Not every poll, and not per segment. A status block is printed only when this composite key changes
+    from the previous poll:
+  </p>
+  <pre>status | playing asset id | expected asset id</pre>
+  <p>So there are three ways to get a new block:</p>
+  <ul>
+    <li><strong>The verdict changed</strong> — e.g. <code>match</code> → <code>unscheduled</code>.</li>
+    <li><strong>The playing asset changed</strong> — a new episode, or an ad slate coming in.</li>
+    <li><strong>The schedule rolled over</strong> — the next programme began. This prints a fresh
+      <code>match</code> line even when nothing is wrong, roughly once per programme.</li>
+  </ul>
+  <p>
+    So a steady channel inside one programme sits on a single block, and an ad break produces several —
+    one going in, one coming back out, and one more for each distinct filler asset:
+  </p>
+  <pre>    asset transition: XM0YNWLNHUP8YD → XM05M7E0PC09SI at ~13:08:17 (segment #28980908)
+[13:08:21] unscheduled   playing=XM05M7E0PC09SI expected=XM0YNWLNHUP8YD  Forensic Files S13E41
+    asset: Forensic Files EN Ad Slate 2026 2 Minutes (SHORT-FORM, 120s)
+    short-form filler (ad slate/bumper) — expected in a break, not drift
+    asset transition: XM05M7E0PC09SI → XM0YNWLNHUP8YD at ~13:10:19 (segment #28980928)
+[13:10:22] match         playing=XM0YNWLNHUP8YD expected=XM0YNWLNHUP8YD  Forensic Files S13E41</pre>
+  <p>
+    <strong>Asset transition</strong> lines are logged separately and identified by the
+    <code>#EXT-X-MEDIA-SEQUENCE</code> number of the new asset&rsquo;s first segment, so each real event is
+    reported exactly once even though it stays visible in the playlist window for about a minute. The
+    guard only compares against the immediately previous state, so a channel genuinely flapping between
+    two assets logs every flip rather than collapsing them.
+  </p>
+
+  <h4>Verdicts</h4>
+  <p>
+    The verdict line and its log entry are colour-coded together: <strong>green</strong> when the right
+    asset is on air, <strong>red</strong> for a real finding — the wrong asset, or unscheduled content that
+    isn&rsquo;t break filler. Filler in an ad break stays neutral because it&rsquo;s routine, and so do the
+    states where the tool simply can&rsquo;t tell. Every state also says what it is in words, so nothing
+    depends on telling red from green.
+  </p>
+  <ul>
+    <li><code>match</code> — the scheduled asset is playing.</li>
+    <li><code>wrong-asset</code> — something else <em>that is on the schedule</em> is playing. This is what
+      real drift most often looks like.</li>
+    <li><code>unscheduled</code> — playing something the schedule doesn&rsquo;t list at all.
+      <strong>Usually not an alarm</strong>: EPGs schedule programmes, not break filler, so a channel in an
+      ad break legitimately plays an asset that appears nowhere in the schedule. The panel looks up the
+      asset&rsquo;s <code>contentType</code> — <code>SHORT-FORM</code> reads as filler and is shown
+      neutrally, <code>EPISODIC</code> is flagged as a real finding.</li>
+    <li><code>no-asset-id</code> — the segment URLs carried no readable asset id.</li>
+    <li><code>no-schedule</code> — the schedule has no entry covering right now.</li>
+  </ul>
+  <p>
+    One case can&rsquo;t be checked automatically in Gracenote mode: nothing links the Xumo channel id in
+    the playback URL to a Gracenote <code>prgSvcId</code>, so a persistent <code>unscheduled</code> on
+    non-filler content may mean genuine drift <em>or</em> that the two ids are different channels.
+    Printing the schedule and reading the titles is the check.
+  </p>
+
+  <h4>Print schedule</h4>
+  <p>
+    Lists the channel&rsquo;s airings on their own — no playback URL and no monitoring run needed. Useful
+    for confirming a <code>prgSvcId</code> is the channel you think it is before starting, and for reading
+    back what was meant to be on air afterwards. <strong>Download schedule CSV</strong> exports that
+    listing; <strong>Download drift CSV</strong> exports the observation log, one row per logged change.
+  </p>
+
+  <h4>Your API key</h4>
+  <p>
+    The Gracenote key is your own. It goes only to Gracenote, never to this app&rsquo;s backend, and error
+    messages are redacted before they reach the page. With <strong>Remember in this browser</strong>
+    ticked it is kept in this browser&rsquo;s local storage so you don&rsquo;t retype it each session;
+    unticking deletes the stored copy immediately.
+  </p>
+</template>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dashjs@4/dist/dash.all.min.js"></script>
 <script type="module" src="stream-tester.js"></script>
@@ -152,5 +276,6 @@
 <script type="module" src="vast-ui.js"></script>
 <script type="module" src="epg-ui.js"></script>
 <script type="module" src="glossary-ui.js"></script>
+<script type="module" src="explainer-ui.js"></script>
 </body>
 </html>

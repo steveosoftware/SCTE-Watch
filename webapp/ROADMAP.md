@@ -130,7 +130,7 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 
 ### Decisions made 2026-08-20
 
-**1. Credentials: user-supplied, never stored.** The app is public-facing, so it will **not** hold a Gracenote key at all — no Lambda env var, no Secrets Manager, nothing server-side. Instead the panel takes the user's own `api_key` in a UI input (`type="password"`, in-memory/sessionStorage only, never localStorage, never committed). Rationale: per-user keys mean no shared quota to abuse, no secret in our infra, nothing for us to rotate, and no way for a stranger to spend the operator's API budget. This **supersedes** the earlier "Lambda holds the key" plan.
+**1. Credentials: user-supplied, never ours.** The app is public-facing, so it will **not** hold a Gracenote key at all — no Lambda env var, no Secrets Manager, nothing server-side. Instead the panel takes the user's own `api_key` in a UI input (`type="password"`, never committed). Rationale: per-user keys mean no shared quota to abuse, no secret in our infra, nothing for us to rotate, and no way for a stranger to spend the operator's API budget. This **supersedes** the earlier "Lambda holds the key" plan. *(The "in-memory only, never localStorage" half of this decision was revisited 2026-08-28 — see "Remembering the key" below. The part that matters, no credential of ours anywhere, still holds.)*
   - Mechanically this needs **zero backend work**: browsers can't call Gracenote directly (no CORS), but the client can build the full Gracenote URL *including* the key and pass it through the existing `/api/fetch` proxy.
   - Known caveat, accepted for now: that puts the key in a query string transiting our Lambda. Nothing writes it down today (our handler logs no request URLs; HTTP API access logging is off by default), but it's one config change away from landing in CloudWatch. A dedicated route taking the key in a header would close that if it ever matters.
 
@@ -272,9 +272,61 @@ Live testing surfaced noisy output: one status change followed by seven "asset c
 
 Fixed by giving each transition a stable identity: the `#EXT-X-MEDIA-SEQUENCE` number of the new asset's first segment. Sequence numbers don't move when the window slides. The first sighting is kept as the best time estimate (fewest segments between the transition and the live-edge anchor), which also stops the drift figure jittering. Guarded by an e2e test that polls an unchanged straddling window repeatedly and asserts exactly one transition line.
 
-The drift line now also states its own accuracy — `±1 segment; estimated from the live edge, no PROGRAM-DATE-TIME in this stream` — since a figure like `+503s` should not be read as second-accurate.
+The drift line now also states its own accuracy — `±1 segment; estimated from the live edge, not read from PROGRAM-DATE-TIME` — since a figure like `+503s` should not be read as second-accurate. (Originally worded `no PROGRAM-DATE-TIME in this stream`; corrected 2026-08-28, see below.)
 
 **Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — now largely moot, since asset ids answer the question directly without needing program boundaries at all.
+
+### Schedule printing + panel order — 2026-08-28
+
+Operator asked for two things: a way to print a channel's Gracenote schedule on its own, and the EPG panel moved above the VAST/VMAP one.
+
+**Print schedule.** Until now the schedule was only ever a means to an end — loaded, compared against the stream, and never shown. But the listing answers a question of its own: *what does the provider think this channel is airing?* Three concrete uses, all of which came up during live testing: confirming a `prgSvcId` is the channel you think it is before starting a drift run (the pairing problem has no automatic check, so eyeballing the titles is the only check there is), reading back what was meant to be on air after a run flagged something, and handing the airings to someone who hasn't got a key to paste in.
+
+Implementation kept the same shape as everything else here: `formatScheduleListing()` and `buildScheduleCsv()` in `epg.js` are pure, DOM-free and operate on the *normalized* schedule, so XMLTV prints identically to Gracenote for free. The listing is column-aligned plain text (index, start UTC, duration, asset id, TMS id, title) with a `▶` marking the airing that covers now. Two details worth keeping:
+
+- **Dates, not just times.** The existing log uses `HH:MM:SS` because it only ever reports "now". A 14-day window needs `YYYY-MM-DD HH:MM:SS` or the listing is ambiguous at every midnight.
+- **Printing during a run reuses the loaded schedule rather than re-fetching** — same channel, same window; a second fetch would spend the user's Gracenote quota and interleave its progress lines with the live monitor log.
+
+The three CSV builders now share one `csvEscape`/`toCsv` pair instead of each carrying its own copy of the quoting rule.
+
+**Panel order.** The EPG panel now sits above the VAST/VMAP validator in `index.html`: schedule/drift work is the daily job, ad-response validation the occasional one. An e2e test asserts the DOM order so a later edit can't silently undo it.
+
+### Remembering the key — 2026-08-28
+
+The original decision was "in-memory only, never localStorage". The operator asked for the opposite: retyping a long opaque key at the start of every session was the main friction in actually using the panel, and a tool people avoid opening catches no drift.
+
+Persisting it to `localStorage` (`scte-watch.gracenote-api-key`) with a visible **Remember in this browser** checkbox, defaulting on. Unticking is treated as "forget it", not just a preference for next time — the stored copy is removed immediately — and the opt-out is itself persisted (`scte-watch.gracenote-remember-key`) so typing a key later doesn't quietly re-enable storage. Only the key is stored; the other fields are ids and URLs that change per check anyway.
+
+What this does and doesn't relax: the key still goes only to Gracenote, never to our own backend, never into a Lambda env var, never into the repo — the part of the original decision that was actually protecting anything. What it costs is that the key now outlives the tab, so on a shared machine, or against any XSS on this origin, the exposure window is every future visit rather than one session. That's the reason the toggle is visible and explicit rather than implicit behaviour.
+
+Every `localStorage` access is guarded: it throws outright when storage is disabled (Safari private browsing, blocked cookies), and a browser that refuses to persist should cost the user a retype, not a broken panel. E2e-tested for surviving a reload, for unticking wiping the stored key, and for the existing "key never reaches the DOM" assertion still holding.
+
+### "How it works" explainer — 2026-08-28
+
+Came directly out of the operator using the panel and asking, reasonably, when the log prints a new line — does it only print when segments change, does a match stay on one line, does an ad break produce several? The behaviour was already deliberate (a status block prints only when `status | playing asset id | expected asset id` changes, transitions are deduped by media sequence) but nothing in the UI said so, and a monitor whose output you can't interpret is a monitor you don't trust.
+
+A **How it works** button in the panel heading opens a modal covering: what it compares and why the stream is the only real answer, where the asset id comes from, why it has to poll and the ±1 segment accuracy that follows, when a new log line appears — including the non-obvious case that a schedule rollover prints a fresh `match` line even when nothing is wrong — what each verdict means, why `unscheduled` is usually an ad break, and what happens to the API key.
+
+Built as a general mechanism rather than one hardcoded popup: `explainer-ui.js` clones whichever `<template>` a button's `data-explainer` attribute names into a shared modal, titled from the template's `data-title`, event-delegated on `document`. Another panel gets an explainer by adding a button and a template to index.html, with no JS change. Kept separate from the glossary modal on purpose — that one renders a one-sentence definition from a data map, this one renders paragraphs of authored markup, and the two overlays share a z-index, so explainer content avoids `.glossary-term` spans rather than stacking modals.
+
+### PDT wording corrected — 2026-08-28
+
+The operator flagged that the explainer's "these playlists carry no `#EXT-X-PROGRAM-DATE-TIME`" generalized from the Xumo channels this was built against to streams in general. Correct: many streams publish PDT, at the playlist level and against every segment.
+
+Two things were wrong, one cosmetic and one not:
+
+1. **The explainer and comments overstated it.** Now: it polls *in case* there's no anchor, because it can't assume one is there.
+2. **The drift log line asserted `no PROGRAM-DATE-TIME in this stream` without ever checking.** Nothing in the code inspects PDT, so on a stream that does carry one the tool was stating a falsehood about that stream. Now reads `not read from PROGRAM-DATE-TIME`, which is true regardless.
+
+**Open improvement, not done here**: `parseMediaPlaylistAssets()` could prefer a real PDT when present and fall back to live-edge interpolation otherwise, which would make the drift figure exact rather than ±1 segment on streams that publish one. `scte35.js`'s `findCueWallclocks()` already follows exactly that pattern for cue timing (authoritative `START-DATE` when present, interpolated otherwise), so there's a precedent in the codebase to copy. The estimate stays honest in the meantime because it now says how it was derived.
+
+### Colour-coded verdicts — 2026-08-28
+
+Operator asked for the obvious thing: a `match` line should read as green and a mismatch as red, rather than every log line being the same grey.
+
+Both the verdict banner and its log entry now take their tone from one `toneFor()` rule, so the two can't disagree about how serious something is. Green for `match`; red for a real finding — `wrong-asset`, or `unscheduled` on content that isn't break filler. Deliberately *not* red: filler in an ad break (routine, and the panel has argued since the first live run that it shouldn't read as an alarm) and `no-asset-id`/`no-schedule`, which are the tool not knowing rather than the channel being wrong. Amber keeps its existing meaning — the tool itself had trouble.
+
+Two constraints worth recording. Colour is never the only signal: every state still names itself in words, since red/green is exactly the pair a colour-blind viewer can't distinguish. And the log tints are inline spans rather than full-width bands, because making them block-level would strip the real newlines out of the `<pre>`'s text content — which would silently weaken the transition-dedupe e2e test that reads that element line by line.
 
 ---
 

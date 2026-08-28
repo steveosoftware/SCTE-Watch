@@ -15,6 +15,10 @@ import {
   compareChannelNames,
   gracenoteScheduleUrl,
   buildComparisonCsv,
+  buildScheduleCsv,
+  formatScheduleListing,
+  formatUtc,
+  formatDuration,
   addDays,
   extractAssetId,
   parseMediaPlaylistAssets,
@@ -851,5 +855,106 @@ describe("gracenoteScheduleUrl / addDays", () => {
     assert.equal(addDays("2026-12-30", 2), "2027-01-01");
     assert.equal(addDays("2024-02-28", 2), "2024-03-01"); // leap year
     assert.equal(addDays("garbage", 2), null);
+  });
+});
+
+describe("formatUtc / formatDuration", () => {
+  test("formats an instant as a dated UTC wall clock", () => {
+    assert.equal(formatUtc(Date.UTC(2026, 7, 28, 0, 19, 0)), "2026-08-28 00:19:00");
+  });
+
+  test("renders a missing instant or duration as a dash rather than NaN", () => {
+    assert.equal(formatUtc(null), "—");
+    assert.equal(formatUtc(undefined), "—");
+    assert.equal(formatDuration(null), "—");
+  });
+
+  test("formats durations as h:mm:ss past the hour", () => {
+    assert.equal(formatDuration(1680), "0:28:00");
+    assert.equal(formatDuration(5415), "1:30:15");
+  });
+});
+
+describe("formatScheduleListing", () => {
+  const schedule = normalizeGracenoteSchedule(parseGracenoteSchedule(gnStitched));
+  const lines = formatScheduleListing(schedule, { label: "Gracenote · prgSvcId 156201" });
+
+  test("prints the label, a summary, a header and one line per programme", () => {
+    assert.equal(lines[0], "Gracenote · prgSvcId 156201");
+    assert.match(lines[1], new RegExp(`^${schedule.length} programme\\(s\\) · `));
+    assert.match(lines[2], /start \(UTC\)/);
+    assert.equal(lines.length, schedule.length + 3);
+  });
+
+  test("shows each airing's start, asset id and TMS id", () => {
+    const first = lines[3];
+    assert.ok(first.includes(schedule[0].assetId), "asset id should be listed");
+    assert.ok(first.includes(schedule[0].tmsId), "tms id should be listed");
+    assert.ok(first.includes(formatUtc(schedule[0].startMs)));
+  });
+
+  test("columns line up, so the listing stays readable in a <pre>", () => {
+    // Every row starts its asset id at the same column as the header does.
+    const headerCol = lines[2].indexOf("asset id");
+    const cols = schedule.map((p, i) => lines[3 + i].indexOf(p.assetId));
+    assert.ok(cols.length > 1, "fixture should have several airings");
+    assert.deepEqual([...new Set(cols)], [headerCol]);
+  });
+
+  test("marks the programme covering `now`, and only that one", () => {
+    const covering = schedule.find((p) => p.stopMs !== null);
+    const marked = formatScheduleListing(schedule, { nowMs: covering.startMs + 1 }).filter((l) =>
+      l.startsWith("▶")
+    );
+    assert.equal(marked.length, 1);
+    assert.ok(marked[0].includes(covering.assetId));
+  });
+
+  test("marks nothing when no `now` is given", () => {
+    assert.equal(lines.filter((l) => l.startsWith("▶")).length, 0);
+  });
+
+  test("an empty schedule still prints a header rather than throwing", () => {
+    const empty = formatScheduleListing([], { label: "XMLTV · nothing" });
+    assert.equal(empty[1], "0 programme(s)");
+    assert.equal(empty.length, 3);
+  });
+
+  test("missing times and titles render as dashes", () => {
+    const out = formatScheduleListing([
+      { startMs: null, stopMs: null, assetId: null, title: null, tmsId: null, source: "gracenote" },
+    ]);
+    // No label, so: summary, header, then the single row.
+    assert.match(out[2], /—/);
+  });
+});
+
+describe("buildScheduleCsv", () => {
+  const schedule = normalizeXmltvSchedule(parseXmltv(xmltvSeries));
+  const csv = buildScheduleCsv(schedule);
+  const rows = csv.trim().split("\n");
+
+  test("emits a header plus one row per airing", () => {
+    assert.equal(rows[0], "start_utc,stop_utc,duration_seconds,asset_id,tms_id,title,source");
+    assert.equal(rows.length - 1, schedule.length);
+  });
+
+  test("writes ISO instants and a duration in seconds", () => {
+    const cells = rows[1].split(",");
+    assert.equal(cells[0], new Date(schedule[0].startMs).toISOString());
+    assert.equal(cells[1], new Date(schedule[0].stopMs).toISOString());
+    assert.equal(Number(cells[2]), Math.round((schedule[0].stopMs - schedule[0].startMs) / 1000));
+  });
+
+  test("quotes titles containing commas so a title can't shift the columns", () => {
+    const tricky = buildScheduleCsv([
+      { startMs: 0, stopMs: 1000, assetId: "XM1", tmsId: "EP1", title: 'Ep, "One"', source: "xmltv" },
+    ]);
+    assert.match(tricky, /"Ep, ""One"""/);
+    assert.equal(tricky.trim().split("\n").length, 2);
+  });
+
+  test("an empty schedule still produces a valid header-only CSV", () => {
+    assert.equal(buildScheduleCsv([]).trim().split("\n").length, 1);
   });
 });

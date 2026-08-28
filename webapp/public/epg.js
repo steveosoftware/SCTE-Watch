@@ -297,15 +297,25 @@ export function extractAssetId(segmentUrl) {
 // Walks an HLS media playlist and returns its segments with an estimated
 // wall-clock time for each.
 //
-// These streams carry NO #EXT-X-PROGRAM-DATE-TIME (verified on real Xumo
-// channels), so there's no wallclock anchor in the manifest. What we do
-// have is that a live playlist's last segment is, by definition, the live
-// edge — approximately "now". So the timeline is anchored at the end and
-// interpolated backwards by accumulating #EXTINF durations. That's an
-// estimate, not ground truth: it inherits any packager latency between a
-// segment being produced and appearing in the playlist. Good enough to
-// time a transition to within a segment duration, which is the resolution
-// the schedule itself is meaningful at.
+// This deliberately does NOT use #EXT-X-PROGRAM-DATE-TIME, and the
+// distinction matters: plenty of streams publish PDT (playlist-level or
+// per-segment) and plenty don't — the Xumo linear channels this was built
+// against are bare (VERSION, TARGETDURATION, MEDIA-SEQUENCE, EXTINF,
+// segment URLs, nothing else) — so relying on it would work on some
+// channels and silently fail on others.
+//
+// What every live playlist does give us is that its last segment is, by
+// definition, the live edge — approximately "now". So the timeline is
+// anchored at the end and interpolated backwards by accumulating #EXTINF
+// durations. That's an estimate, not ground truth: it inherits any
+// packager latency between a segment being produced and appearing in the
+// playlist. Good enough to time a transition to within a segment
+// duration, which is the resolution the schedule itself is meaningful at.
+//
+// Worth improving: where a PDT IS present it's an exact anchor, and
+// preferring it (falling back to the live edge otherwise) would make the
+// drift figure exact on those streams. scte35.js's findCueWallclocks()
+// already does exactly this for cue timing.
 export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
   const lines = String(text || "").split(/\r?\n/);
   const segments = [];
@@ -704,14 +714,21 @@ export function attachProgramTitles(schedule, programMap) {
   });
 }
 
+// ------------------------------------------------------------- reporting
+
+function csvEscape(v) {
+  const s = v === null || v === undefined ? "" : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function toCsv(rows) {
+  return rows.map((r) => r.map(csvEscape).join(",")).join("\n") + "\n";
+}
+
 // The observation log from a monitoring run — one row per poll that
 // changed something, so a session can be handed to someone else as
 // evidence rather than screenshotted.
 export function buildObservationCsv(observations) {
-  const esc = (v) => {
-    const s = v === null || v === undefined ? "" : String(v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
   const rows = [
     ["observed_utc", "status", "playing_asset_id", "expected_asset_id", "expected_title", "drift_seconds", "note"],
   ];
@@ -726,7 +743,7 @@ export function buildObservationCsv(observations) {
       o.note || "",
     ]);
   }
-  return rows.map((r) => r.map(esc).join(",")).join("\n") + "\n";
+  return toCsv(rows);
 }
 
 // Flattens a schedule-vs-schedule comparison into CSV — one row per
@@ -739,10 +756,6 @@ export function buildObservationCsv(observations) {
 // tests, because comparing two schedule sources is still a real question
 // and the operator's original shell workflow did exactly this.
 export function buildComparisonCsv(report) {
-  const esc = (v) => {
-    const s = v === null || v === undefined ? "" : String(v);
-    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  };
   const iso = (ms) => (ms === null || ms === undefined ? "" : new Date(ms).toISOString());
 
   const rows = [
@@ -784,7 +797,82 @@ export function buildComparisonCsv(report) {
     rows.push(["only-in-gracenote", "", iso(p.startMs), "", "", "", p.tmsId, "", p.remoteId]);
   }
 
-  return rows.map((r) => r.map(esc).join(",")).join("\n") + "\n";
+  return toCsv(rows);
+}
+
+// Wall-clock UTC, "YYYY-MM-DD HH:MM:SS". Schedule windows routinely span
+// midnight, so a listing needs the date and not just the time of day.
+export function formatUtc(ms) {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "—";
+  return new Date(ms).toISOString().replace("T", " ").slice(0, 19);
+}
+
+export function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return "—";
+  const s = Math.max(0, Math.round(seconds));
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${Math.floor(s / 3600)}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
+}
+
+// A human-readable dump of a normalized schedule — the listing itself,
+// with no stream involved. Answers "what does the provider think this
+// channel is airing?", which is a question worth asking on its own:
+// pairing a prgSvcId to a channel, sanity-checking a window before a
+// drift run, or handing the airings to someone who has no API key.
+//
+// Returns plain lines (column-aligned) so the caller can print them to a
+// <pre>, a terminal, or a file without knowing anything about the DOM.
+export function formatScheduleListing(schedule, { label = "", nowMs = null } = {}) {
+  const rows = schedule.map((p, i) => ({
+    n: String(i + 1),
+    start: formatUtc(p.startMs),
+    dur: formatDuration(
+      p.startMs !== null && p.startMs !== undefined && p.stopMs !== null && p.stopMs !== undefined
+        ? (p.stopMs - p.startMs) / 1000
+        : null
+    ),
+    assetId: p.assetId || "—",
+    tmsId: p.tmsId || "—",
+    title: p.title || "—",
+    // Marks the entry covering `nowMs`, so a printed listing shows at a
+    // glance where the channel should be right now.
+    now:
+      nowMs !== null &&
+      p.startMs !== null &&
+      p.startMs !== undefined &&
+      p.startMs <= nowMs &&
+      p.stopMs !== null &&
+      p.stopMs !== undefined &&
+      nowMs < p.stopMs,
+  }));
+
+  const head = { n: "#", start: "start (UTC)", dur: "duration", assetId: "asset id", tmsId: "tms id", title: "title", now: false };
+  const width = (k) => Math.max(...[head, ...rows].map((r) => r[k].length));
+  const w = { n: width("n"), start: width("start"), dur: width("dur"), assetId: width("assetId"), tmsId: width("tmsId") };
+  const line = (r) =>
+    `${r.now ? "▶" : " "} ${r.n.padStart(w.n)}  ${r.start.padEnd(w.start)}  ${r.dur.padEnd(w.dur)}  ` +
+    `${r.assetId.padEnd(w.assetId)}  ${r.tmsId.padEnd(w.tmsId)}  ${r.title}`;
+
+  const out = [];
+  if (label) out.push(label);
+  out.push(`${schedule.length} programme(s)` + (rows.length ? ` · ${rows[0].start} → ${formatUtc(schedule[schedule.length - 1].stopMs)}` : ""));
+  out.push(line(head));
+  for (const r of rows) out.push(line(r));
+  return out;
+}
+
+// The same listing as CSV, for a spreadsheet or a ticket attachment.
+export function buildScheduleCsv(schedule) {
+  const iso = (ms) => (ms === null || ms === undefined ? "" : new Date(ms).toISOString());
+  const rows = [["start_utc", "stop_utc", "duration_seconds", "asset_id", "tms_id", "title", "source"]];
+  for (const p of schedule) {
+    const durS =
+      p.startMs !== null && p.startMs !== undefined && p.stopMs !== null && p.stopMs !== undefined
+        ? Math.round((p.stopMs - p.startMs) / 1000)
+        : "";
+    rows.push([iso(p.startMs), iso(p.stopMs), durS, p.assetId, p.tmsId, p.title, p.source]);
+  }
+  return toCsv(rows);
 }
 
 // Gracenote takes plain YYYY-MM-DD bounds; <input type="date"> hands us

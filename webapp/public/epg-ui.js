@@ -8,14 +8,20 @@
 // XMLTV — one or the other, never both, since in practice a channel has
 // one or the other.
 //
-// Why it polls: these streams carry no #EXT-X-PROGRAM-DATE-TIME, so the
-// manifest has no wallclock anchor and the only observable instant is
-// "now" at the live edge. A single check yields a yes/no; watching across
-// polls catches the asset transition and turns it into a drift figure.
+// Why it polls: the panel can't assume the manifest carries a wallclock
+// anchor. Many streams publish #EXT-X-PROGRAM-DATE-TIME (playlist-level or
+// per-segment) and many don't, so the only instant it can always observe
+// is "now" at the live edge. A single check yields a yes/no; watching
+// across polls catches the asset transition and turns it into a drift
+// figure. Note it doesn't read PDT even where one exists — see
+// parseMediaPlaylistAssets.
 //
-// Credential policy (see CONTEXT.md): no Gracenote key is stored. The user
-// supplies their own; it lives in memory for the page's lifetime, and
-// every error path redacts it before anything reaches the DOM.
+// Credential policy (see CONTEXT.md): the app never holds a Gracenote key
+// of its own. The user supplies theirs; it goes only to Gracenote, never
+// to our backend, and every error path redacts it before anything reaches
+// the DOM. It is remembered in this browser's localStorage (opt-out via
+// the checkbox) so it doesn't have to be retyped every session — see the
+// storage block below for what that trade costs.
 
 import {
   parseXmltv,
@@ -25,6 +31,8 @@ import {
   parseMediaPlaylistAssets,
   comparePlaybackToSchedule,
   buildObservationCsv,
+  buildScheduleCsv,
+  formatScheduleListing,
   gracenoteScheduleUrl,
   gracenoteProgramsUrl,
   parseGracenotePrograms,
@@ -45,6 +53,7 @@ const $ = (id) => document.getElementById(id);
 const playbackInput = $("epg-playback-url");
 const intervalInput = $("epg-interval");
 const keyInput = $("epg-key");
+const rememberKeyInput = $("epg-remember-key");
 const prgSvcInput = $("epg-prgsvcid");
 const dateInput = $("epg-date");
 const daysInput = $("epg-days");
@@ -54,6 +63,8 @@ const xmltvFields = $("epg-xmltv-fields");
 const runBtn = $("epg-run");
 const stopBtn = $("epg-stop");
 const downloadBtn = $("epg-download");
+const printBtn = $("epg-print");
+const downloadScheduleBtn = $("epg-download-schedule");
 const statusEl = $("epg-status");
 const verdictEl = $("epg-verdict");
 const outputEl = $("epg-output");
@@ -74,6 +85,76 @@ for (const r of document.querySelectorAll('input[name="epg-source"]')) {
 }
 syncSourceFields();
 
+// The Gracenote key is remembered in this browser's localStorage, opt-out
+// via the checkbox. It's the one field worth persisting: everything else
+// in the panel is an id or a URL that changes per check, while the key is
+// the same long opaque string every session, and retyping it was the main
+// friction in using the panel at all.
+//
+// What this does NOT change (see CONTEXT.md's credential policy): the key
+// is still the user's own, still never sent anywhere but Gracenote, never
+// held by our backend, never in a Lambda env var, never committed. The
+// cost of persisting is that it now survives the tab — so on a shared
+// machine, or with any XSS on this origin, the exposure window is every
+// future visit rather than just the session. Hence: an explicit,
+// visible toggle, and unticking it wipes the stored copy immediately.
+const KEY_STORAGE_ID = "scte-watch.gracenote-api-key";
+const REMEMBER_STORAGE_ID = "scte-watch.gracenote-remember-key";
+
+// localStorage throws outright when storage is disabled (Safari private
+// browsing, blocked cookies), so every access is guarded — a browser that
+// won't persist should cost the user a retype, not a broken panel.
+function storage() {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readStored(id) {
+  try {
+    return storage()?.getItem(id) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStored(id, value) {
+  try {
+    if (value === null) storage()?.removeItem(id);
+    else storage()?.setItem(id, value);
+  } catch {
+    /* storage unavailable or full — persistence is a convenience, not a requirement */
+  }
+}
+
+function rememberingKey() {
+  return rememberKeyInput.checked;
+}
+
+// An empty field stores nothing rather than an empty entry, so "no key
+// remembered" and "a key remembered that happens to be blank" can't differ.
+function persistKey() {
+  writeStored(KEY_STORAGE_ID, rememberingKey() && keyInput.value ? keyInput.value : null);
+}
+
+// Restore before anything else touches the field, so a remembered key is
+// already in place when the panel first renders.
+(function restoreKey() {
+  const remembered = readStored(REMEMBER_STORAGE_ID);
+  rememberKeyInput.checked = remembered === null ? true : remembered === "1";
+  if (rememberKeyInput.checked) keyInput.value = readStored(KEY_STORAGE_ID) ?? "";
+})();
+
+keyInput.addEventListener("input", persistKey);
+rememberKeyInput.addEventListener("change", () => {
+  writeStored(REMEMBER_STORAGE_ID, rememberingKey() ? "1" : "0");
+  // Unticking is a "forget it" instruction, not just a preference for
+  // next time — the stored copy goes now.
+  persistKey();
+});
+
 function redact(s) {
   return String(s).replace(/api_key=[^&\s"']+/gi, "api_key=***");
 }
@@ -87,6 +168,7 @@ let observations = [];
 let mediaPlaylistUrl = null;
 let schedule = [];
 let scheduleLabel = "";
+let printedSchedule = [];
 let lastStatusKey = null;
 const assetInfoCache = new Map();
 
@@ -120,8 +202,11 @@ async function describeAsset(assetId) {
   return info;
 }
 
-function appendLog(html) {
-  outputEl.innerHTML += (outputEl.textContent ? "\n" : "") + html;
+// `cls` tints one line (see logTone). Kept as an inline span rather than a
+// full-width block so this <pre> keeps real newlines in its text content.
+function appendLog(html, cls = "") {
+  const line = cls ? `<span class="${cls}">${html}</span>` : html;
+  outputEl.innerHTML += (outputEl.textContent ? "\n" : "") + line;
   outputEl.scrollTop = outputEl.scrollHeight;
 }
 
@@ -152,9 +237,24 @@ const PAIRING_HINT =
   "not filler and not on the schedule — either genuine drift, or the playback URL " +
   "and the schedule id are different channels (nothing links those two id namespaces, so this can't be checked automatically)";
 
+// One rule for both the banner and the log line, so they can't disagree
+// about how serious something is:
+//   ok   — the right asset is on air
+//   bad  — a real finding: the wrong asset, or unscheduled content that
+//          isn't break filler
+//   ""   — neither. Filler in an ad break is routine and must not read as
+//          an alarm; no-asset-id/no-schedule are the tool not knowing,
+//          which is not the same as the channel being wrong.
+function toneFor(result, info) {
+  if (result.status === "match") return "ok";
+  if (result.status === "wrong-asset") return "bad";
+  if (result.status === "unscheduled") return isLikelyFiller(info) ? "" : "bad";
+  return "";
+}
+
 function renderVerdict(result, nowMs, info) {
-  const bad = result.status === "wrong-asset" || result.status === "unscheduled";
-  verdictEl.className = "status " + (bad ? "warn" : "");
+  const tone = toneFor(result, info);
+  verdictEl.className = "status " + tone;
   const parts = [escapeHtml(STATUS_TEXT[result.status] ?? result.status)];
   const playingLabel = info && info.title ? `${result.playingAssetId} — ${info.title}` : result.playingAssetId ?? "—";
   parts.push(`playing <strong>${escapeHtml(playingLabel)}</strong>`);
@@ -168,10 +268,7 @@ function renderVerdict(result, nowMs, info) {
   }
   let html = parts.join(" &nbsp;·&nbsp; ") + ` &nbsp;·&nbsp; ${ts(nowMs)}Z`;
   if (result.status === "unscheduled") {
-    const filler = isLikelyFiller(info);
-    // Filler is routine, so it must not read as an alarm.
-    if (filler) verdictEl.className = "status";
-    html += `<br><span class="note">${escapeHtml(filler ? FILLER_NOTE : PAIRING_HINT)}</span>`;
+    html += `<br><span class="note">${escapeHtml(isLikelyFiller(info) ? FILLER_NOTE : PAIRING_HINT)}</span>`;
   }
   verdictEl.innerHTML = html;
 }
@@ -286,25 +383,31 @@ async function poll() {
 
       const expected = result.expected ? result.expected.assetId ?? "—" : "—";
       const title = result.expected?.title ? `  ${result.expected.title}` : "";
+      const tone = toneFor(result, info);
       appendLog(
         escapeHtml(
           `[${ts(nowMs)}] ${result.status.padEnd(13)} playing=${result.playingAssetId ?? "—"} ` +
             `expected=${expected}${title}`
-        )
+        ),
+        tone ? `line-${tone}` : ""
       );
       if (info && info.title) {
-        appendLog(escapeHtml(`    asset: ${info.title} (${info.contentType ?? "?"}${info.runtimeS ? ", " + info.runtimeS + "s" : ""})`));
+        appendLog(
+          escapeHtml(`    asset: ${info.title} (${info.contentType ?? "?"}${info.runtimeS ? ", " + info.runtimeS + "s" : ""})`),
+          "line-muted"
+        );
       }
       if (result.status === "unscheduled") {
-        appendLog(escapeHtml(`    ${isLikelyFiller(info) ? FILLER_NOTE : PAIRING_HINT}`));
+        appendLog(escapeHtml(`    ${isLikelyFiller(info) ? FILLER_NOTE : PAIRING_HINT}`), "line-muted");
       }
       if (result.drift) {
         appendLog(
           escapeHtml(
             `    started ~${ts(result.drift.observedStartMs)}, scheduled ${ts(result.drift.scheduledStartMs)}` +
               ` → ${result.drift.seconds > 0 ? "+" : ""}${result.drift.seconds}s` +
-              ` (±1 segment; estimated from the live edge, no PROGRAM-DATE-TIME in this stream)`
-          )
+              ` (±1 segment; estimated from the live edge, not read from PROGRAM-DATE-TIME)`
+          ),
+          "line-muted"
         );
       }
     }
@@ -312,7 +415,7 @@ async function poll() {
     // Only newly-seen transitions, so an event is reported once.
     for (const t of freshTransitions) {
       const at = t.atSequence !== null && t.atSequence !== undefined ? ` (segment #${t.atSequence})` : "";
-      appendLog(escapeHtml(`    asset transition: ${t.fromAssetId} → ${t.toAssetId} at ~${ts(t.atMs)}${at}`));
+      appendLog(escapeHtml(`    asset transition: ${t.fromAssetId} → ${t.toAssetId} at ~${ts(t.atMs)}${at}`), "line-muted");
     }
 
     statusEl.textContent = `Watching · ${observations.length} event(s) logged`;
@@ -342,6 +445,8 @@ runBtn.addEventListener("click", async () => {
   lastStatusKey = null;
   seenTransitions.clear();
   downloadBtn.disabled = true;
+  printedSchedule = [];
+  downloadScheduleBtn.disabled = true;
 
   const playbackUrl = playbackInput.value.trim();
   if (!playbackUrl) {
@@ -355,6 +460,10 @@ runBtn.addEventListener("click", async () => {
     schedule = await loadSchedule();
     if (!schedule.length) throw new Error("Schedule loaded but contains no programmes");
     appendLog(escapeHtml(`schedule: ${scheduleLabel} · ${schedule.length} programmes`));
+    // The schedule is in hand either way, so offer it without making the
+    // user stop the run to press Print.
+    printedSchedule = schedule;
+    downloadScheduleBtn.disabled = false;
 
     statusEl.textContent = "Resolving playlist…";
     mediaPlaylistUrl = await resolveMediaPlaylist(playbackUrl);
@@ -377,6 +486,50 @@ downloadBtn.addEventListener("click", () => {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `epg_drift_${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// "Print schedule" — the listing on its own, with no stream involved.
+// Useful before a drift run (does this prgSvcId look like the right
+// channel?) and afterwards (what was actually meant to be airing?), and
+// it's the only way to see the schedule for someone who has no key of
+// their own to paste into the panel.
+//
+// While a run is in progress this prints the schedule already loaded
+// rather than re-fetching: it's the same channel and window, and a second
+// fetch would spend the user's quota and interleave with the live log.
+printBtn.addEventListener("click", async () => {
+  const running = pollTimer !== null;
+  printBtn.disabled = true;
+  statusEl.classList.remove("warn");
+  try {
+    if (!running) {
+      outputEl.innerHTML = "";
+      verdictEl.innerHTML = "";
+      statusEl.textContent = "Loading schedule…";
+      schedule = await loadSchedule();
+    }
+    printedSchedule = schedule;
+    if (!printedSchedule.length) throw new Error("Schedule loaded but contains no programmes");
+    for (const line of formatScheduleListing(printedSchedule, { label: scheduleLabel, nowMs: Date.now() })) {
+      appendLog(escapeHtml(line));
+    }
+    downloadScheduleBtn.disabled = false;
+    if (!running) statusEl.textContent = `Schedule printed · ${printedSchedule.length} programme(s)`;
+  } catch (e) {
+    statusEl.textContent = `Error: ${redact(e.message)}`;
+    statusEl.classList.add("warn");
+  }
+  printBtn.disabled = false;
+});
+
+downloadScheduleBtn.addEventListener("click", () => {
+  if (!printedSchedule.length) return;
+  const blob = new Blob([buildScheduleCsv(printedSchedule)], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `epg_schedule_${Date.now()}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 });

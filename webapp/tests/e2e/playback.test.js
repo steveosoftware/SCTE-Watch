@@ -245,6 +245,10 @@ describe("offline / deterministic", () => {
     assert.match(log, /Test Channel/, "should name the channel it loaded the schedule for");
     assert.match(log, /match/);
 
+    assert.match(await page.getAttribute("#epg-verdict", "class"), /ok/, "a match should read as good, not just unflagged");
+    assert.match(await page.$eval("#epg-output .line-ok", (el) => el.textContent), /match/);
+    assert.equal(await page.$$eval("#epg-output .line-bad", (els) => els.length), 0);
+
     await page.close();
   });
 
@@ -258,8 +262,13 @@ describe("offline / deterministic", () => {
     assert.match(verdict, /XMLATERASSET01/, "should show what IS playing");
     assert.match(verdict, /XM08RIB78GYPVR/, "and what should be");
 
-    const warnClass = await page.getAttribute("#epg-verdict", "class");
-    assert.match(warnClass, /warn/, "a wrong asset must be visually flagged");
+    const verdictClass = await page.getAttribute("#epg-verdict", "class");
+    assert.match(verdictClass, /bad/, "a wrong asset must be visually flagged");
+    assert.match(
+      await page.$eval("#epg-output .line-bad", (el) => el.textContent),
+      /wrong-asset/,
+      "and the log line for it should carry the same tone"
+    );
 
     await page.close();
   });
@@ -322,6 +331,68 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  test("EPG: Print schedule lists the airings on their own, with no playback URL", async () => {
+    const { page } = await newPage();
+    const now = Date.now();
+    await page.route("**/api/fetch**", async (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      if (!target.includes("xmltv")) return route.continue();
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ text: xmltvAround(now, "XM08RIB78GYPVR"), finalUrl: target, headers: {} }),
+      });
+    });
+
+    await page.goto(BASE_URL);
+    await page.check('input[name="epg-source"][value="xmltv"]');
+    await page.fill("#epg-xmltv-url", "https://example.test/epg/xmltv/88884008_TEST.xml");
+    // Deliberately no playback URL — printing the schedule doesn't need one.
+    await page.click("#epg-print");
+    await page.waitForFunction(
+      () => (document.getElementById("epg-output")?.textContent || "").includes("Scheduled Later"),
+      { timeout: 15000 }
+    );
+
+    const log = await page.textContent("#epg-output");
+    assert.match(log, /2 programme\(s\)/);
+    assert.match(log, /Scheduled Now/);
+    assert.match(log, /XMLATERASSET01/, "asset ids should be listed");
+    const marked = log.split("\n").filter((l) => l.startsWith("▶"));
+    assert.equal(marked.length, 1, "exactly the airing covering now should be marked");
+    assert.match(marked[0], /Scheduled Now/);
+
+    assert.equal(await page.isDisabled("#epg-download-schedule"), false, "CSV becomes available once printed");
+    await page.close();
+  });
+
+  test("the Stream URL input fills its row, so a long URL can be read back", async () => {
+    const { page } = await newPage();
+    await page.goto(BASE_URL);
+    await page.fill(
+      "#tester-url",
+      "https://hls-cf.xumo.com/channel-hls/v3/eyJhbGciOiJIUzI1NiJ9.abcdef0123456789/88893069/master.m3u8"
+    );
+    const box = await page.$eval("#tester-url", (el) => ({
+      width: el.clientWidth,
+      row: el.parentElement.clientWidth,
+      scrolls: el.scrollWidth > el.clientWidth,
+    }));
+    // It should be taking the room the row has spare, not sitting at the
+    // browser's default input width.
+    assert.ok(box.width > box.row * 0.5, `input ${box.width}px in a ${box.row}px row`);
+    assert.equal(box.scrolls, false, "a full tokenized playback URL should be readable without scrolling the field");
+    await page.close();
+  });
+
+  test("the EPG panel sits above the VAST/VMAP panel", async () => {
+    const { page } = await newPage();
+    await page.goto(BASE_URL);
+    const order = await page.$$eval("main > section.panel", (els) => els.map((e) => e.id));
+    assert.ok(order.indexOf("epg-panel") < order.indexOf("vast-panel"), order.join(" → "));
+    await page.close();
+  });
+
   test("EPG drift: schedule source toggle swaps which fields are shown", async () => {
     const { page } = await newPage();
     await page.goto(BASE_URL);
@@ -331,6 +402,71 @@ describe("offline / deterministic", () => {
     await page.check('input[name="epg-source"][value="xmltv"]');
     assert.equal(await page.isVisible("#epg-key"), false);
     assert.equal(await page.isVisible("#epg-xmltv-url"), true, "one source or the other, never both");
+    await page.close();
+  });
+
+  test("the Gracenote key is remembered across sessions, and unticking forgets it", async () => {
+    const { page } = await newPage();
+    await page.goto(BASE_URL);
+    assert.equal(await page.isChecked("#epg-remember-key"), true, "remembering is the default");
+    await page.fill("#epg-key", "TEST-SECRET-KEY");
+
+    // A fresh page on the same origin is what "next session" looks like.
+    await page.goto(BASE_URL);
+    assert.equal(await page.inputValue("#epg-key"), "TEST-SECRET-KEY");
+    assert.equal(await page.isChecked("#epg-remember-key"), true);
+
+    // Unticking is a forget-it instruction: the stored copy goes now.
+    await page.uncheck("#epg-remember-key");
+    assert.equal(
+      await page.evaluate(() => window.localStorage.getItem("scte-watch.gracenote-api-key")),
+      null,
+      "unticking must wipe the stored key immediately"
+    );
+
+    await page.goto(BASE_URL);
+    assert.equal(await page.inputValue("#epg-key"), "", "no key comes back once forgotten");
+    assert.equal(await page.isChecked("#epg-remember-key"), false, "the opt-out itself is remembered");
+
+    // Typing with the box unticked must not quietly start persisting again.
+    await page.fill("#epg-key", "ANOTHER-SECRET");
+    assert.equal(
+      await page.evaluate(() => window.localStorage.getItem("scte-watch.gracenote-api-key")),
+      null
+    );
+
+    await page.evaluate(() => window.localStorage.clear());
+    await page.close();
+  });
+
+  test("\"How it works\" opens an explainer and Escape closes it", async () => {
+    const { page, consoleErrors } = await newPage();
+    await page.goto(BASE_URL);
+
+    assert.equal(await page.isVisible("#explainer-modal"), false, "starts closed");
+    await page.click('[data-explainer="epg-explainer"]');
+    assert.equal(await page.isVisible("#explainer-modal"), true);
+    assert.match(await page.textContent("#explainer-modal-title"), /how it works/i);
+
+    const body = await page.textContent("#explainer-modal-body");
+    assert.match(body, /When a new line appears in the log/);
+    assert.match(body, /status \| playing asset id \| expected asset id/);
+    assert.match(body, /wrong-asset/);
+
+    await page.keyboard.press("Escape");
+    assert.equal(await page.isVisible("#explainer-modal"), false);
+    assert.equal(
+      await page.textContent("#explainer-modal-body"),
+      "",
+      "the clone is dropped on close, so find-in-page sees one copy of the text"
+    );
+
+    // The panel underneath still works after the modal has been used.
+    await page.click('[data-explainer="epg-explainer"]');
+    await page.click("#explainer-modal-close");
+    assert.equal(await page.isVisible("#explainer-modal"), false);
+    assert.deepEqual(consoleErrors, []);
+
     await page.close();
   });
 
@@ -365,6 +501,7 @@ describe("offline / deterministic", () => {
     assert.ok(!(await page.content()).includes("TEST-SECRET-KEY"), "the key must not be echoed into the DOM");
     assert.equal(await page.getAttribute("#epg-key", "type"), "password");
 
+    await page.evaluate(() => window.localStorage.clear());
     await page.close();
   });
 
