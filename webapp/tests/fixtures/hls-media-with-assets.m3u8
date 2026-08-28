@@ -1,0 +1,21 @@
+## Captured from a real Xumo channel (88884008), lightly trimmed.
+## Note what is NOT here: no #EXT-X-PROGRAM-DATE-TIME, no SCTE-35, no
+## EXT-X-DATERANGE. The asset id lives only in the segment path, and the
+## playlist offers no wallclock anchor - which is why the timeline is
+## interpolated backwards from the live edge. One beacon-wrapped segment is
+## kept deliberately: those carry the real URL in a query param plus an
+## explicit aid=, and must resolve to the same asset id as their neighbours.
+#EXTM3U
+#EXT-X-TARGETDURATION:7
+#EXT-X-VERSION:3
+#EXT-X-MEDIA-SEQUENCE:661263
+#EXTINF:6.005,pid=3845
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_059.ts
+#EXTINF:6.005,pid=3845
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_060.ts
+#EXTINF:6.005,pid=3845
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_061.ts
+#EXTINF:6.005,pid=3845
+https://hls-beacons.xumo.com/hlsstream/v1/beacon?url=https%3A%2F%2Flive-content.xumo.com%2F3845%2Fcontent%2FXM08RIB78GYPVR%2F28846714%2F6_062.ts&aid=XM08RIB78GYPVR&eventType=ASSET&cid=88884008&did=7a884267de5c44a9&playId=1782720448000&eventSubType=playInterval&pid=3845
+#EXTINF:6.005,pid=3845
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_063.ts

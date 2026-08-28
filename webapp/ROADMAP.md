@@ -19,7 +19,7 @@ Update this alongside `CONTEXT.md` as items land.
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
 5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
-6. ~~**Gracenote EPG drift detection.**~~ **Done** (2026-08-26) — shipped as the EPG drift panel. **Two open items pending the operator**: which credential/transport actually applies (REST `api_key` vs FTP), and verifying the Gracenote date/time parsing against a real response. See its own section below.
+6. ~~**EPG drift detection.**~~ **Done** (2026-08-26; comparison basis reworked 2026-08-27 to check the *stream* rather than a second schedule). **Two open items pending the operator**: which Gracenote credential/transport applies (REST `api_key` vs FTP), and verifying the Gracenote date/time parsing against a real response. See its own section below.
 
 ---
 
@@ -113,7 +113,7 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 
 ---
 
-## Gracenote EPG drift detection ✅ Done (2026-08-26)
+## EPG drift detection ✅ Done (2026-08-26, reworked 2026-08-27)
 
 **API shape confirmed** (2026-08-19) from a set of working Bash scripts the operator already runs for a related manual QA process (comparing Gracenote's outbound schedule against platform exports) — reviewed and summarized here, not committed to the repo (they contain a live API key; see security note below).
 
@@ -201,7 +201,32 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 
 **⚠ The one unverified assumption.** `parseGracenoteTime()`'s handling of the `date`/`time` attribute serialization is *inferred* from the operator's scripts, which only ever string-compared those values and never parsed them — a live Gracenote response has never been observed directly. The parser is deliberately tolerant (accepts `HH:MM`, `HH:MM:SS`, trailing `Z`, explicit offset; assumes UTC otherwise) and Gracenote `<error>` bodies are surfaced verbatim rather than silently yielding an empty schedule. **Verify against a real response the first time this runs with a live key**, and replace the synthetic fixtures with a real (key-stripped) capture at that point.
 
-**Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — still a bonus, still unbuilt.
+### Reworked 2026-08-27 — compare against the stream, not a second schedule
+
+**The original comparison answered the wrong question.** It diffed a Gracenote schedule against an XMLTV schedule — metadata vs metadata. Both can agree perfectly while the channel plays the wrong thing. Corrected by the operator: the check should be *"is the right asset playing on the linear channel right now."*
+
+This supersedes decision 2 above. That decision reasoned that stream-side comparison wasn't viable because SCTE-35 program boundaries (`0x10`/`0x11`) are rare and PDT gives only segment wallclock — both true, but it **missed the asset id sitting in the segment path**, which makes program-boundary signaling unnecessary.
+
+**What the real streams actually carry** (verified against live Xumo channels 88884008 and 88884124):
+
+- Asset id in the segment path: `https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_004.ts`. Same `XM` namespace as XMLTV `<programme-id>` / Gracenote `remoteId`.
+- The host varies by channel and CDN swap (`live-content.xumo.com`, `live-content.cdn.xumo.com`, `live-content-cf.xumo.com`) — extraction keys on the `/content/` path, never the hostname.
+- Some channels also expose it as an explicit `aid=` param on beacon-wrapped segment URLs, alongside `cid=` (channel) and `eventType=ASSET`.
+- **No `#EXT-X-PROGRAM-DATE-TIME`, no SCTE-35, no `EXT-X-DATERANGE`, no discontinuities.** The playlists are bare. This is the constraint that shapes the design.
+
+**Consequences of no PDT:**
+
+1. The manifest carries no wallclock anchor, so the only observable instant is "now" at the live edge. You cannot retroactively ask what was playing at 3pm yesterday — that data has aged out of the playlist.
+2. Therefore the panel **polls**. One check gives a boolean; watching across polls catches the asset transition and yields a drift figure in seconds.
+3. The segment timeline is interpolated **backwards** from the live edge by accumulating `#EXTINF` — an estimate carrying packager latency, accurate to about a segment duration.
+
+**Schedule source is one or the other, never both** — confirmed by the operator: a channel typically has Gracenote or XMLTV, not both. Both normalize to a common shape so the comparison is source-agnostic.
+
+**Bug found by the e2e test while building this**: `.row` sets `display: flex`, which overrides the `hidden` attribute's UA `display: none` — so both schedule-source field sets rendered at once. Fixed with an explicit `.row[hidden] { display: none; }`.
+
+**Robustness gap found while verifying**: `attr()` only matched double-quoted XML attribute values, so a single-quoted document parsed to an empty schedule — a failure that reads as "nothing scheduled" rather than "couldn't parse". Now accepts both quote styles. **`vast.js` has the same double-quote-only pattern** and should get the same treatment (not done; low priority, since real VAST responses observed so far use double quotes).
+
+**Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — now largely moot, since asset ids answer the question directly without needing program boundaries at all.
 
 ---
 

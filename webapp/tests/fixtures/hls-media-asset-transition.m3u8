@@ -1,0 +1,19 @@
+## Synthetic, shaped after the real capture above: the playlist window
+## straddles an asset change, so a single poll can both see the boundary and
+## estimate when it happened. Deliberately uses a different CDN host on the
+## second asset (live-content-cf) to prove extraction keys on the /content/
+## path rather than the hostname.
+#EXTM3U
+#EXT-X-TARGETDURATION:7
+#EXT-X-VERSION:3
+#EXT-X-MEDIA-SEQUENCE:661300
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_100.ts
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_101.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_001.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_002.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_003.ts

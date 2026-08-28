@@ -98,30 +98,41 @@
   </section>
 
   <section class="panel" id="epg-panel">
-    <h2>EPG drift — Gracenote vs platform XMLTV</h2>
+    <h2>EPG drift — what&#39;s playing vs what&#39;s scheduled</h2>
     <div class="row">
-      <label for="epg-key">Gracenote API key</label>
-      <input id="epg-key" type="password" autocomplete="off" placeholder="your own key — never stored or sent anywhere but Gracenote">
-      <label for="epg-prgsvcid">prgSvcId</label>
-      <input id="epg-prgsvcid" type="text" class="narrow" placeholder="156201">
+      <label for="epg-playback-url">Playback URL</label>
+      <input id="epg-playback-url" type="text" placeholder="https://.../master.m3u8 — the linear channel to watch">
+      <label for="epg-interval">Poll (s)</label>
+      <input id="epg-interval" type="number" min="1" step="1" value="10" class="narrow">
     </div>
     <div class="row">
+      <label>Schedule source</label>
+      <label class="radio"><input type="radio" name="epg-source" value="gracenote" checked> Gracenote</label>
+      <label class="radio"><input type="radio" name="epg-source" value="xmltv"> XMLTV</label>
+      <span class="note">One or the other — a channel typically has one, not both.</span>
+    </div>
+    <div class="row" id="epg-gracenote-fields">
+      <label for="epg-key">API key</label>
+      <input id="epg-key" type="password" autocomplete="off" placeholder="your own key — never stored">
+      <label for="epg-prgsvcid">prgSvcId</label>
+      <input id="epg-prgsvcid" type="text" class="narrow" placeholder="156201">
+      <label for="epg-date">From</label>
+      <input id="epg-date" type="date">
+      <label for="epg-days">Days</label>
+      <input id="epg-days" type="number" min="1" max="14" step="1" value="2" class="narrow">
+    </div>
+    <div class="row" id="epg-xmltv-fields" hidden>
       <label for="epg-xmltv-url">XMLTV URL</label>
       <input id="epg-xmltv-url" type="text" placeholder="https://carbon.xumo.com/epg/xmltv/88840011_XSNFH.xml">
     </div>
     <div class="row">
-      <label for="epg-date">Start date</label>
-      <input id="epg-date" type="date">
-      <label for="epg-days">Days</label>
-      <input id="epg-days" type="number" min="1" max="14" step="1" value="2" class="narrow">
-      <label for="epg-tolerance">Drift tolerance (s)</label>
-      <input id="epg-tolerance" type="number" min="0" step="1" value="0" class="narrow">
-      <button id="epg-run" class="secondary">Compare</button>
+      <button id="epg-run">Start</button>
+      <button id="epg-stop" class="secondary" disabled>Stop</button>
       <button id="epg-download" class="secondary" disabled>Download CSV</button>
       <span id="epg-status" class="status"></span>
     </div>
     <div class="row">
-      <span id="epg-channel" class="status"></span>
+      <span id="epg-verdict" class="status"></span>
     </div>
     <pre id="epg-output" class="log"></pre>
   </section>

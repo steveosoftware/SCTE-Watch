@@ -176,12 +176,39 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
-  // The XMLTV side goes through the REAL /api/fetch proxy against the local
-  // fixture server; only the Gracenote calls are stubbed, since hitting the
-  // live API would need a real key. That keeps the proxy -> parse -> compare
-  // -> render path genuinely exercised end to end.
-  async function stubGracenote(page, scheduleFixture, sourceName = "FilmRise Horror") {
-    const schedule = readFileSync(path.join(FIXTURES_DIR, scheduleFixture), "utf8");
+  // The EPG panel checks the STREAM against a schedule, so both sides are
+  // stubbed here: a media playlist whose segment paths carry a known asset
+  // id, and a schedule built around the current clock (fixtures use fixed
+  // 2026-08 dates, which would never cover "now").
+  function xmltvStamp(ms) {
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, "0");
+    return (
+      `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}` +
+      `${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())} +0000`
+    );
+  }
+
+  function xmltvAround(now, assetId) {
+    return `<?xml version="1.0"?><tv date="x">
+      <channel id="88884008"><display-name>Test Channel</display-name></channel>
+      <programme start="${xmltvStamp(now - 1800000)}" stop="${xmltvStamp(now + 1800000)}" channel="88884008">
+        <title>Scheduled Now</title><tms-id>MV000000000000</tms-id><programme-id>${assetId}</programme-id>
+      </programme>
+      <programme start="${xmltvStamp(now + 1800000)}" stop="${xmltvStamp(now + 3600000)}" channel="88884008">
+        <title>Scheduled Later</title><tms-id>MV000000000001</tms-id><programme-id>XMLATERASSET01</programme-id>
+      </programme>
+    </tv>`;
+  }
+
+  function mediaPlaylist(assetId) {
+    const seg = (n) => `https://live-content.xumo.com/3845/content/${assetId}/28846714/6_${n}.ts`;
+    return `#EXTM3U\n#EXT-X-TARGETDURATION:7\n#EXT-X-MEDIA-SEQUENCE:1\n` +
+      [1, 2, 3].map((n) => `#EXTINF:6.000,\n${seg(n)}`).join("\n") + "\n";
+  }
+
+  async function runEpgWatch(page, { playingAssetId, scheduledAssetId }) {
+    const now = Date.now();
     await page.route("**/api/fetch**", async (route) => {
       const target = new URL(route.request().url()).searchParams.get("url") || "";
       const reply = (text) =>
@@ -190,88 +217,102 @@ describe("offline / deterministic", () => {
           contentType: "application/json",
           body: JSON.stringify({ text, finalUrl: target, headers: {} }),
         });
-      if (target.includes("on-api.gracenote.com/v3/Schedules")) return reply(schedule);
-      if (target.includes("on-api.gracenote.com/v3/Sources")) {
-        return reply(`<sources><source><name>${sourceName}</name></source></sources>`);
-      }
+      if (target.includes("xmltv")) return reply(xmltvAround(now, scheduledAssetId));
+      if (target.includes(".m3u8")) return reply(mediaPlaylist(playingAssetId));
       return route.continue();
     });
-  }
-
-  async function runEpgCompare(page, { scheduleFixture, sourceName }) {
-    await stubGracenote(page, scheduleFixture, sourceName);
     await page.goto(BASE_URL);
-    await page.fill("#epg-key", "TEST-SECRET-KEY");
-    await page.fill("#epg-prgsvcid", "156201");
-    await page.fill("#epg-xmltv-url", `http://127.0.0.1:${FIXTURE_SERVER_PORT}/xmltv-movies.xml`);
-    await page.fill("#epg-date", "2026-08-25");
+    await page.check('input[name="epg-source"][value="xmltv"]');
+    await page.fill("#epg-playback-url", "https://example.test/channel/media.m3u8");
+    await page.fill("#epg-xmltv-url", "https://example.test/epg/xmltv/88884008_TEST.xml");
     await page.click("#epg-run");
-    await page.waitForFunction(() => {
-      const t = document.getElementById("epg-status")?.textContent || "";
-      return t.includes("drift") || t.includes("Differences") || t.includes("Error");
-    }, { timeout: 15000 });
+    await page.waitForFunction(
+      () => (document.getElementById("epg-verdict")?.textContent || "").length > 0,
+      { timeout: 15000 }
+    );
+    await page.click("#epg-stop");
   }
 
-  test("EPG drift: a clean channel reports no drift and confirms the channel pairing", async () => {
+  test("EPG drift: the scheduled asset playing reads as a match", async () => {
     const { page } = await newPage();
-    await runEpgCompare(page, { scheduleFixture: "gracenote-schedule-stitched.xml" });
+    await runEpgWatch(page, { playingAssetId: "XM08RIB78GYPVR", scheduledAssetId: "XM08RIB78GYPVR" });
 
-    assert.equal(await page.textContent("#epg-status"), "No drift detected.");
+    const verdict = await page.textContent("#epg-verdict");
+    assert.match(verdict, /correct asset playing/);
+    assert.match(verdict, /XM08RIB78GYPVR/);
 
-    const channel = await page.textContent("#epg-channel");
-    assert.match(channel, /FilmRise Horror/);
-    assert.match(channel, /same channel/, "matching names should read as a positive confirmation");
-
-    const out = await page.textContent("#epg-output");
-    assert.match(out, /paired on start\s*:\s*5/);
-    assert.match(out, /alignment\s*:\s*100%/);
-    // the alternate-cut entry must be surfaced as unmapped, not as a mismatch
-    assert.match(out, /no TMS mapping\s*:\s*1/);
-    assert.match(out, /House \(1985\)/);
+    const log = await page.textContent("#epg-output");
+    assert.match(log, /Test Channel/, "should name the channel it loaded the schedule for");
+    assert.match(log, /match/);
 
     await page.close();
   });
 
-  test("EPG drift: real differences are detected and itemized", async () => {
+  test("EPG drift: a different scheduled asset playing is flagged as WRONG ASSET", async () => {
     const { page } = await newPage();
-    await runEpgCompare(page, { scheduleFixture: "gracenote-schedule-drift.xml" });
+    // stream is playing the programme scheduled for LATER, not the current one
+    await runEpgWatch(page, { playingAssetId: "XMLATERASSET01", scheduledAssetId: "XM08RIB78GYPVR" });
 
-    assert.equal(await page.textContent("#epg-status"), "Differences found — see below.");
-    const out = await page.textContent("#epg-output");
-    assert.match(out, /start-time drift\s*:\s*1/);
-    assert.match(out, /Maneater/);
-    assert.match(out, /-90s/, "the signed drift size should be shown");
-    assert.match(out, /MV0DIFFERENT00/, "the conflicting TMS id should be shown");
-    assert.match(out, /ONLY IN XUMO \(1\)/);
-    assert.match(out, /Living Dark/);
+    const verdict = await page.textContent("#epg-verdict");
+    assert.match(verdict, /WRONG ASSET/);
+    assert.match(verdict, /XMLATERASSET01/, "should show what IS playing");
+    assert.match(verdict, /XM08RIB78GYPVR/, "and what should be");
+
+    const warnClass = await page.getAttribute("#epg-verdict", "class");
+    assert.match(warnClass, /warn/, "a wrong asset must be visually flagged");
 
     await page.close();
   });
 
-  test("EPG drift: mismatched channel names raise the mispairing warning", async () => {
+  test("EPG drift: an asset absent from the schedule reads as UNSCHEDULED", async () => {
     const { page } = await newPage();
-    await runEpgCompare(page, {
-      scheduleFixture: "gracenote-schedule-stitched.xml",
-      sourceName: "Forensic Files", // wrong channel for this XMLTV feed
-    });
+    await runEpgWatch(page, { playingAssetId: "XMGHOSTASSET99", scheduledAssetId: "XM08RIB78GYPVR" });
+    assert.match(await page.textContent("#epg-verdict"), /UNSCHEDULED/);
+    await page.close();
+  });
 
-    const channel = await page.textContent("#epg-channel");
-    assert.match(channel, /names differ/, "pairing the wrong channels must be called out");
-    assert.match(channel, /Forensic Files/);
-    assert.match(channel, /FilmRise Horror/);
-
+  test("EPG drift: schedule source toggle swaps which fields are shown", async () => {
+    const { page } = await newPage();
+    await page.goto(BASE_URL);
+    // Gracenote is the default
+    assert.equal(await page.isVisible("#epg-key"), true);
+    assert.equal(await page.isVisible("#epg-xmltv-url"), false);
+    await page.check('input[name="epg-source"][value="xmltv"]');
+    assert.equal(await page.isVisible("#epg-key"), false);
+    assert.equal(await page.isVisible("#epg-xmltv-url"), true, "one source or the other, never both");
     await page.close();
   });
 
   test("SECURITY: the Gracenote API key never reaches the rendered page", async () => {
     const { page } = await newPage();
-    await runEpgCompare(page, { scheduleFixture: "gracenote-schedule-stitched.xml" });
+    const now = Date.now();
+    await page.route("**/api/fetch**", async (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const reply = (text) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ text, finalUrl: target, headers: {} }),
+        });
+      if (target.includes("on-api.gracenote.com")) {
+        // deliberately an error response, to exercise the redacting path
+        return reply("<errors><error>bad request</error></errors>");
+      }
+      if (target.includes(".m3u8")) return reply(mediaPlaylist("XM08RIB78GYPVR"));
+      return route.continue();
+    });
+    await page.goto(BASE_URL);
+    await page.fill("#epg-playback-url", "https://example.test/channel/media.m3u8");
+    await page.fill("#epg-key", "TEST-SECRET-KEY");
+    await page.fill("#epg-prgsvcid", "156201");
+    await page.click("#epg-run");
+    await page.waitForFunction(
+      () => (document.getElementById("epg-status")?.textContent || "").length > 0,
+      { timeout: 15000 }
+    );
 
-    const html = await page.content();
-    assert.ok(!html.includes("TEST-SECRET-KEY"), "the key must not be echoed into the DOM");
-    // and it must still be held only in the input the user typed it into
-    const inputType = await page.getAttribute("#epg-key", "type");
-    assert.equal(inputType, "password");
+    assert.ok(!(await page.content()).includes("TEST-SECRET-KEY"), "the key must not be echoed into the DOM");
+    assert.equal(await page.getAttribute("#epg-key", "type"), "password");
 
     await page.close();
   });

@@ -41,6 +41,14 @@ header h1 {
   flex-wrap: wrap;
 }
 
+/* An author `display` rule beats the UA stylesheet's [hidden]{display:none},
+   so a .row with the hidden attribute would still render as a flex box.
+   Needed for the EPG panel, which hides whichever schedule-source fields
+   aren't selected. */
+.row[hidden] {
+  display: none;
+}
+
 .row label {
   font-size: 0.85rem;
   color: #9aa0a6;
@@ -76,6 +84,14 @@ textarea {
   width: 5em;
 }
 
+label.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  cursor: pointer;
+}
+
+#epg-playback-url,
 #epg-xmltv-url,
 #epg-key {
   flex: 1;

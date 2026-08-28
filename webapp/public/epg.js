@@ -33,9 +33,14 @@ function stripCdata(s) {
   return m ? m[1] : s;
 }
 
+// XML permits either quote style on attribute values. The real Xumo and
+// Gracenote feeds use double quotes throughout, but accepting both costs
+// nothing and avoids a silent "no data" that looks like an empty schedule
+// rather than a parse failure.
 function attr(name, attrsStr) {
-  const m = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i").exec(attrsStr || "");
-  return m ? unescapeXml(m[1]) : null;
+  const m = new RegExp(`\\b${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i").exec(attrsStr || "");
+  if (!m) return null;
+  return unescapeXml(m[2] !== undefined ? m[2] : m[3]);
 }
 
 function firstTagText(tagName, xml) {
@@ -241,6 +246,176 @@ export function parseGracenoteSourceName(text) {
   return firstTagText("name", text);
 }
 
+// ------------------------------------------------- what's actually playing
+
+// Xumo segment URLs carry the asset id in the path:
+//   https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_059.ts
+//                                      ^^^^^^^^^^^^^^^^^^^^^
+// The host varies across channels and CDN swaps (live-content.xumo.com,
+// live-content.cdn.xumo.com, live-content-cf.xumo.com), so this keys on the
+// path segment after /content/ rather than on any hostname. Same XM-prefixed
+// namespace as XMLTV's <programme-id> and Gracenote's remoteId, which is
+// what makes the comparison possible at all.
+const ASSET_ID_IN_PATH = /\/content\/([A-Za-z0-9_-]+)\//;
+
+export function extractAssetId(segmentUrl) {
+  const m = ASSET_ID_IN_PATH.exec(String(segmentUrl || ""));
+  if (m) return m[1];
+  // Beacon-wrapped segments put the real URL in a query param and also
+  // expose the asset id directly as aid=.
+  const aid = /[?&]aid=([A-Za-z0-9_-]+)/.exec(String(segmentUrl || ""));
+  return aid ? aid[1] : null;
+}
+
+// Walks an HLS media playlist and returns its segments with an estimated
+// wall-clock time for each.
+//
+// These streams carry NO #EXT-X-PROGRAM-DATE-TIME (verified on real Xumo
+// channels), so there's no wallclock anchor in the manifest. What we do
+// have is that a live playlist's last segment is, by definition, the live
+// edge — approximately "now". So the timeline is anchored at the end and
+// interpolated backwards by accumulating #EXTINF durations. That's an
+// estimate, not ground truth: it inherits any packager latency between a
+// segment being produced and appearing in the playlist. Good enough to
+// time a transition to within a segment duration, which is the resolution
+// the schedule itself is meaningful at.
+export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
+  const lines = String(text || "").split(/\r?\n/);
+  const segments = [];
+  let pendingDuration = null;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const inf = /^#EXTINF:\s*([\d.]+)/.exec(line);
+    if (inf) {
+      pendingDuration = parseFloat(inf[1]);
+      continue;
+    }
+    if (line.startsWith("#")) continue;
+    segments.push({
+      url: line,
+      durationS: pendingDuration ?? 0,
+      assetId: extractAssetId(line),
+    });
+    pendingDuration = null;
+  }
+
+  // Anchor the last segment's END at now, then walk backwards.
+  let cursor = nowMs;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    segments[i].endMs = cursor;
+    segments[i].startMs = cursor - segments[i].durationS * 1000;
+    cursor = segments[i].startMs;
+  }
+
+  // Asset changes visible inside this one window.
+  const transitions = [];
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i].assetId && segments[i].assetId !== segments[i - 1].assetId) {
+      transitions.push({
+        fromAssetId: segments[i - 1].assetId,
+        toAssetId: segments[i].assetId,
+        atMs: segments[i].startMs,
+      });
+    }
+  }
+
+  const last = segments[segments.length - 1];
+  return {
+    segments,
+    liveEdgeAssetId: last ? last.assetId : null,
+    transitions,
+    windowSeconds: segments.reduce((a, s) => a + s.durationS, 0),
+  };
+}
+
+// ------------------------------------------- schedules, source-agnostic
+
+// Both schedule sources normalize to the same shape so everything
+// downstream is source-agnostic: the panel compares against Gracenote OR
+// XMLTV, never both, and shouldn't care which it was handed.
+export function normalizeXmltvSchedule(parsed) {
+  return parsed.programmes.map((p) => ({
+    startMs: p.startMs,
+    stopMs: p.stopMs,
+    assetId: p.programmeId,
+    title: p.title,
+    tmsId: p.tmsId,
+    source: "xmltv",
+  }));
+}
+
+export function normalizeGracenoteSchedule(parsed) {
+  return parsed.programmes.map((p) => ({
+    startMs: p.startMs,
+    stopMs: p.stopMs,
+    assetId: p.remoteId,
+    title: null, // /Schedules carries no title; /Programs would, keyed by TMS id
+    tmsId: p.tmsId,
+    source: "gracenote",
+  }));
+}
+
+// The scheduled entry covering an instant. Half-open [start, stop) so a
+// boundary instant belongs to the programme starting then, not the one
+// ending.
+export function findScheduledAt(schedule, tMs) {
+  return (
+    schedule.find(
+      (p) => p.startMs !== null && p.startMs <= tMs && (p.stopMs === null ? false : tMs < p.stopMs)
+    ) ?? null
+  );
+}
+
+// Compares what the stream is actually playing against what the schedule
+// says should be playing. This is the check that matters operationally —
+// two schedules agreeing with each other proves nothing about the stream.
+//
+// Returns {status, playingAssetId, expected, drift} where status is:
+//   "match"          — right asset playing
+//   "wrong-asset"    — something else is playing
+//   "unscheduled"    — playing an asset the schedule doesn't cover at all
+//   "no-asset-id"    — couldn't read an asset id from the segments
+//   "no-schedule"    — schedule has no entry for this instant
+export function comparePlaybackToSchedule(playback, schedule, nowMs = Date.now()) {
+  const playingAssetId = playback.liveEdgeAssetId;
+  const expected = findScheduledAt(schedule, nowMs);
+
+  let status;
+  if (!playingAssetId) status = "no-asset-id";
+  else if (!expected) status = "no-schedule";
+  else if (!expected.assetId) status = "no-schedule";
+  else if (normalizeId(expected.assetId) === normalizeId(playingAssetId)) status = "match";
+  else {
+    // Is the playing asset scheduled at all, just at a different time?
+    const elsewhere = schedule.find((p) => normalizeId(p.assetId) === normalizeId(playingAssetId));
+    status = elsewhere ? "wrong-asset" : "unscheduled";
+  }
+
+  // If the playing asset IS scheduled, how far off is its start? Uses the
+  // observed transition when this poll happened to capture one (accurate to
+  // roughly a segment), otherwise falls back to comparing against the start
+  // of whatever the schedule expected.
+  let drift = null;
+  const scheduledForPlaying = playingAssetId
+    ? schedule.find((p) => normalizeId(p.assetId) === normalizeId(playingAssetId))
+    : null;
+  const observedStart = playback.transitions.find(
+    (t) => normalizeId(t.toAssetId) === normalizeId(playingAssetId)
+  );
+  if (scheduledForPlaying && scheduledForPlaying.startMs !== null && observedStart) {
+    drift = {
+      observedStartMs: observedStart.atMs,
+      scheduledStartMs: scheduledForPlaying.startMs,
+      seconds: Math.round((observedStart.atMs - scheduledForPlaying.startMs) / 1000),
+      basis: "observed-transition",
+    };
+  }
+
+  return { status, playingAssetId, expected, scheduledForPlaying, drift };
+}
+
 // ------------------------------------------------------------- comparison
 
 function normalizeId(v) {
@@ -371,10 +546,40 @@ export function gracenoteSourceUrl({ apiKey, prgSvcId }) {
   return `https://on-api.gracenote.com/v3/Sources?${q}`;
 }
 
-// Flattens a comparison into CSV — one row per programme slot, both sides
-// side by side with a verdict. The original shell workflow's whole
-// deliverable was a CSV report, so this keeps that output available
-// rather than trapping the findings in a <pre>.
+// The observation log from a monitoring run — one row per poll that
+// changed something, so a session can be handed to someone else as
+// evidence rather than screenshotted.
+export function buildObservationCsv(observations) {
+  const esc = (v) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const rows = [
+    ["observed_utc", "status", "playing_asset_id", "expected_asset_id", "expected_title", "drift_seconds", "note"],
+  ];
+  for (const o of observations) {
+    rows.push([
+      new Date(o.atMs).toISOString(),
+      o.status,
+      o.playingAssetId,
+      o.expected ? o.expected.assetId : "",
+      o.expected ? o.expected.title : "",
+      o.drift ? o.drift.seconds : "",
+      o.note || "",
+    ]);
+  }
+  return rows.map((r) => r.map(esc).join(",")).join("\n") + "\n";
+}
+
+// Flattens a schedule-vs-schedule comparison into CSV — one row per
+// programme slot, both sides side by side with a verdict.
+//
+// NOTE: currently unwired from the UI. The panel compares the *stream*
+// against one schedule (see comparePlaybackToSchedule), which is the check
+// that actually catches a mis-scheduled channel — two schedules agreeing
+// with each other proves nothing about what's playing. Kept, with its
+// tests, because comparing two schedule sources is still a real question
+// and the operator's original shell workflow did exactly this.
 export function buildComparisonCsv(report) {
   const esc = (v) => {
     const s = v === null || v === undefined ? "" : String(v);
