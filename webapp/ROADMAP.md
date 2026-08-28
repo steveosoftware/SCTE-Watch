@@ -19,7 +19,7 @@ Update this alongside `CONTEXT.md` as items land.
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
 5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
-6. ~~**EPG drift detection.**~~ **Done** (2026-08-26; comparison basis reworked 2026-08-27 to check the *stream* rather than a second schedule). **Two open items pending the operator**: which Gracenote credential/transport applies (REST `api_key` vs FTP), and verifying the Gracenote date/time parsing against a real response. See its own section below.
+6. ~~**EPG drift detection.**~~ **Done** (2026-08-26; comparison basis reworked 2026-08-27 to check the *stream* rather than a second schedule; verified against production 2026-08-28). Credential question resolved — the REST `api_key` API is the approach, FTP is a separate pipeline and out of scope. Serialization verified against a live response. **One open item**: channel pairing can't be auto-verified in Gracenote mode. See its own section below.
 
 ---
 
@@ -178,6 +178,19 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 **6. Channel-pairing guardrail.** Because the two IDs are unverified user assertions, pairing the wrong two channels yields a clean-looking ~0%-aligned report that reads as catastrophic drift but is really just operator error. Cheap to catch: Gracenote `/Sources?prgSvcId=` returns a channel `<name>`, XMLTV carries `<display-name>`. Compare them and surface both names as a **confirmation signal** to the user, warning on mismatch. Non-blocking (legitimate naming differences exist), but it turns a silently-misleading report into an obviously-suspect one.
 
 **The two `*_cms.json` files are not EPG data** and aren't part of this feature. They're Roku CMS channel manifests — `providerName`/`categories`/`playlists`/`liveFeeds[]`, where `liveFeeds[]` carries channel id, title, advisory rating, thumbnail, description, and **the HLS master URL**. No programme listings, no times, no TMS IDs; the two samples describe different channels (`88884008`, `88884125`) than the XMLTV samples. Worth remembering separately though: they map a channel to its playable HLS master, which is a plausible future convenience (pick a channel → auto-fill the Stream Tester URL), just unrelated to drift detection.
+
+### Shipped 2026-08-26
+
+`public/epg.js` (pure parsing + comparison) and `public/epg-ui.js` (the panel). All six decisions above were built as specified. Implementation notes worth keeping:
+
+- **One parser, not two branches.** The shell scripts sniffed the first entry's `remoteId` to choose between `//broadcast` and `//event` XPaths — but those describe the *same* tree (`<schedule prgSvcId date>` > `<event time dur TMSId>`), with stitched channels merely adding a nested `<broadcast><id type="remoteId">`. Matching `<event>` and reading the optional nested id handles both, so the sniffing step (and the bug where the two branches disagreed on a filename) simply doesn't exist here.
+- **Pairing is a linear two-pointer merge** over both start-sorted lists. `pairWindowSeconds` (default 300) decides what counts as the same slot; `driftToleranceSeconds` (default 0, exposed in the UI) decides what counts as drift. Separating those two knobs matters — one generous window to *identify* a pair, one strict threshold to *judge* it.
+- **`alignmentPct` is `null`, never `0`,** when nothing is comparable — a 0% would read as total failure rather than "no data."
+- **Test coverage**: 46 unit tests (`tests/unit/epg.test.js`) plus 4 e2e tests in the offline tier, including one asserting the API key never reaches the DOM. XMLTV fixtures are trimmed from the real feeds (`xmltv-movies.xml` deliberately keeps an entry with no `tms-id`); Gracenote fixtures are clearly labeled **SYNTHETIC**.
+
+**✅ Resolved — the REST API is the approach** (2026-08-27, confirmed by the operator: *"api approach is not being retired. it's the approach we'll use."*). The FTP user/password mentioned earlier is a separate pipeline and is **out of scope for this feature**. No FTP client, no credential handling beyond the user-supplied `api_key`, no change to the data path.
+
+For the record, since it was investigated: FTP would have needed a genuinely different design, not a different auth header — browsers dropped FTP entirely (Chrome 88 / Firefox 90), `ssrf-guard.js` rejects non-http(s) by design and Node's built-in `fetch()` has no FTP support, FTP credentials are account logins rather than scoped tokens, and FTP delivery is bulk file drops rather than per-channel/date-window queries. If it ever does become relevant, the recommended shape is operator-supplied files rather than the app holding credentials.
 
 ### Shipped 2026-08-26
 

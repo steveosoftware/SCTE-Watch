@@ -40,6 +40,8 @@ Note the two schedule sources describe the same airing differently: Xumo's asset
 
 ## Public-facing app — credential policy
 
+**Gracenote access is the REST API** (`on-api.gracenote.com/v3`) with a user-supplied `api_key` — confirmed by the operator 2026-08-27 and not being retired. An FTP user/password exists for a *separate* pipeline; it is out of scope for this app and no FTP support should be added on its account.
+
 This is deployed publicly, so **the app holds no third-party API credentials at all**. Any integration needing a key (Gracenote today, anything similar later) takes the *user's own* key via a UI input — `type="password"`, in-memory/sessionStorage only, never localStorage, never a Lambda env var, never committed. Per-user keys mean no shared quota to abuse, no secret in our infrastructure, and nothing for us to rotate. Decided 2026-08-20; it supersedes the earlier "Lambda holds the key" plan that ROADMAP.md used to describe. The operator gates the deployed site behind Amplify's own password protection separately (they manage that themselves — not something this codebase configures).
 
 ## Running it
