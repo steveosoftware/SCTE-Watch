@@ -199,32 +199,26 @@ Fetch a real segment, demux, extract the `splice_info_section`, run it through t
 - **If FTP turns out to be the path**, the recommended shape is: the operator pulls the files down themselves and the panel accepts an uploaded/pasted file, keeping credentials off our infrastructure entirely. Preferred even if the FTP connection were technically possible.
 - **Most likely resolution** (unconfirmed): the operator has both — the REST API for queries and a separate FTP drop for bulk delivery — in which case the panel as built is already correct and the FTP is an unrelated pipeline.
 
-**⚠ The one unverified assumption.** `parseGracenoteTime()`'s handling of the `date`/`time` attribute serialization is *inferred* from the operator's scripts, which only ever string-compared those values and never parsed them — a live Gracenote response has never been observed directly. The parser is deliberately tolerant (accepts `HH:MM`, `HH:MM:SS`, trailing `Z`, explicit offset; assumes UTC otherwise) and Gracenote `<error>` bodies are surfaced verbatim rather than silently yielding an empty schedule. **Verify against a real response the first time this runs with a live key**, and replace the synthetic fixtures with a real (key-stripped) capture at that point.
+**✅ Gracenote serialization — now VERIFIED** (2026-08-28, against a live `/Schedules?prgSvcId=157905` response). This replaces the earlier "unverified assumption" warning. What the real response looks like:
 
-### Reworked 2026-08-27 — compare against the stream, not a second schedule
+```xml
+<on schemaVersion="3.27"><schedules type="tv">
+  <schedule prgSvcId="157905" date="2026-08-28" updateDate="2026-08-28T02:04:42Z">
+    <event TMSId="EP022439260099" rootId="9131772" time="00:19" dur="PT00H28M" isGeneric="false">
+      <quals>CC|HD 720p</quals>
+      <broadcast><id type="remoteId">XM0S73JEOMUUNL</id></broadcast>
+    </event>
+```
 
-**The original comparison answered the wrong question.** It diffed a Gracenote schedule against an XMLTV schedule — metadata vs metadata. Both can agree perfectly while the channel plays the wrong thing. Corrected by the operator: the check should be *"is the right asset playing on the linear channel right now."*
+The structural inference from the shell scripts was correct — `<schedule prgSvcId date>` > `<event time dur TMSId>` with a nested `<broadcast><id type="remoteId">` on stitched channels, and one parser covering both channel types. Three concrete corrections came out of it:
 
-This supersedes decision 2 above. That decision reasoned that stream-side comparison wasn't viable because SCTE-35 program boundaries (`0x10`/`0x11`) are rare and PDT gives only segment wallclock — both true, but it **missed the asset id sitting in the segment path**, which makes program-boundary signaling unnecessary.
+1. **`dur` is an ISO 8601 duration (`PT00H28M`), not seconds or `HH:MM:SS`.** This was a live bug: every real duration parsed to `null`, which nulled `stopMs`, which made `findScheduledAt` match nothing — surfacing to the operator as *"I'm not seeing a Gracenote schedule returned"* rather than as a parse error. `parseDurationSeconds` now handles ISO (with any component omitted) plus the previous forms.
+2. **`time` is `HH:MM`** — no seconds component. Already handled.
+3. **The response body carries no credential** — `api_key` is a request parameter and is not echoed back in `<requestParameters>` (verified before committing a capture). So real responses are safe to keep as fixtures.
 
-**What the real streams actually carry** (verified against live Xumo channels 88884008 and 88884124):
+`tests/fixtures/gracenote-schedule-real.xml` is a trimmed real capture and is now the fixture that pins this serialization; the synthetic fixtures were regenerated to use the real ISO duration format so they can't drift from reality again.
 
-- Asset id in the segment path: `https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_004.ts`. Same `XM` namespace as XMLTV `<programme-id>` / Gracenote `remoteId`.
-- The host varies by channel and CDN swap (`live-content.xumo.com`, `live-content.cdn.xumo.com`, `live-content-cf.xumo.com`) — extraction keys on the `/content/` path, never the hostname.
-- Some channels also expose it as an explicit `aid=` param on beacon-wrapped segment URLs, alongside `cid=` (channel) and `eventType=ASSET`.
-- **No `#EXT-X-PROGRAM-DATE-TIME`, no SCTE-35, no `EXT-X-DATERANGE`, no discontinuities.** The playlists are bare. This is the constraint that shapes the design.
-
-**Consequences of no PDT:**
-
-1. The manifest carries no wallclock anchor, so the only observable instant is "now" at the live edge. You cannot retroactively ask what was playing at 3pm yesterday — that data has aged out of the playlist.
-2. Therefore the panel **polls**. One check gives a boolean; watching across polls catches the asset transition and yields a drift figure in seconds.
-3. The segment timeline is interpolated **backwards** from the live edge by accumulating `#EXTINF` — an estimate carrying packager latency, accurate to about a segment duration.
-
-**Schedule source is one or the other, never both** — confirmed by the operator: a channel typically has Gracenote or XMLTV, not both. Both normalize to a common shape so the comparison is source-agnostic.
-
-**Bug found by the e2e test while building this**: `.row` sets `display: flex`, which overrides the `hidden` attribute's UA `display: none` — so both schedule-source field sets rendered at once. Fixed with an explicit `.row[hidden] { display: none; }`.
-
-**Robustness gap found while verifying**: `attr()` only matched double-quoted XML attribute values, so a single-quoted document parsed to an empty schedule — a failure that reads as "nothing scheduled" rather than "couldn't parse". Now accepts both quote styles. **`vast.js` has the same double-quote-only pattern** and should get the same treatment (not done; low priority, since real VAST responses observed so far use double quotes).
+**Another parser gap found the same way**: XML comments were not stripped, so markup-shaped text inside a comment was matched as real markup. Fixed with `stripComments()` ahead of all matching, on both the XMLTV and Gracenote paths.
 
 **Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — now largely moot, since asset ids answer the question directly without needing program boundaries at all.
 

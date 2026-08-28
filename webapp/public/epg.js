@@ -33,6 +33,15 @@ function stripCdata(s) {
   return m ? m[1] : s;
 }
 
+// A regex parser will happily match markup-shaped text inside an XML
+// comment, so comments are removed before anything else runs. (Caveat: a
+// CDATA block containing a literal "<!--" would be damaged by this. No
+// observed feed does that, and the alternative is a real XML parser —
+// which this module deliberately avoids so it stays DOM-free for tests.)
+function stripComments(s) {
+  return String(s || "").replace(/<!--[\s\S]*?-->/g, "");
+}
+
 // XML permits either quote style on attribute values. The real Xumo and
 // Gracenote feeds use double quotes throughout, but accepting both costs
 // nothing and avoids a silent "no data" that looks like an empty schedule
@@ -71,12 +80,11 @@ export function parseXmltvTime(s) {
 // Gracenote splits the timestamp across two attributes: a `date` on the
 // parent <schedule> and a `time` on the <event>.
 //
-// NOTE: the exact serialization is inferred from the operator's existing
-// scripts (which only ever string-compared these, never parsed them) — the
-// live API response has not been observed directly. Deliberately tolerant:
-// accepts HH:MM / HH:MM:SS, an optional trailing Z, and an optional
-// numeric offset. Assumes UTC when no zone is given, consistent with
-// /Schedules taking plain YYYY-MM-DD startDate/endDate bounds.
+// VERIFIED against a live response (prgSvcId 157905, 2026-08-28):
+// date="2026-08-28" on <schedule>, time="00:19" on <event> — HH:MM with no
+// seconds component. Still deliberately tolerant (accepts HH:MM:SS, a
+// trailing Z, an explicit numeric offset) and assumes UTC when no zone is
+// given, consistent with /Schedules taking plain YYYY-MM-DD bounds.
 export function parseGracenoteTime(dateStr, timeStr) {
   const dm = /^\s*(\d{4})-(\d{2})-(\d{2})\s*$/.exec(String(dateStr || ""));
   if (!dm) return null;
@@ -93,17 +101,34 @@ export function parseGracenoteTime(dateStr, timeStr) {
   return ms;
 }
 
-// Gracenote durations appear as a `dur` attribute. Accepts either raw
-// seconds or HH:MM:SS, since which one the API emits is unconfirmed.
+// Gracenote's `dur` attribute is an ISO 8601 duration — confirmed against a
+// live response (2026-08-28): dur="PT00H28M". An earlier version of this
+// only handled raw seconds and HH:MM:SS, so every real duration parsed to
+// null, which nulled stopMs, which made findScheduledAt match nothing and
+// presented as "no schedule covering right now" rather than as a parse
+// failure. The other two forms are kept since they cost nothing.
 export function parseDurationSeconds(s) {
   const v = String(s ?? "").trim();
   if (!v) return null;
+
+  // ISO 8601: PnDTnHnMnS, any component optional (PT28M, PT1H, PT90S…)
+  const iso = /^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/i.exec(v);
+  if (iso && iso.slice(1).some((g) => g !== undefined)) {
+    const [, d, h, m, sec] = iso;
+    return (
+      (d ? parseFloat(d) * 86400 : 0) +
+      (h ? parseFloat(h) * 3600 : 0) +
+      (m ? parseFloat(m) * 60 : 0) +
+      (sec ? parseFloat(sec) : 0)
+    );
+  }
+
   if (/^\d+$/.test(v)) return Number(v);
-  const m = /^(\d+):(\d{2})(?::(\d{2}))?$/.exec(v);
-  if (!m) return null;
-  return m[3] !== undefined
-    ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])
-    : Number(m[1]) * 60 + Number(m[2]);
+  const clock = /^(\d+):(\d{2})(?::(\d{2}))?$/.exec(v);
+  if (!clock) return null;
+  return clock[3] !== undefined
+    ? Number(clock[1]) * 3600 + Number(clock[2]) * 60 + Number(clock[3])
+    : Number(clock[1]) * 60 + Number(clock[2]);
 }
 
 // ------------------------------------------------------------ XMLTV source
@@ -114,7 +139,8 @@ export function parseDurationSeconds(s) {
 // The episode/series block (sub-title, series-id, episode-num, date) is
 // present on series channels and absent on movie channels — treated as
 // optional rather than branched on, since everything else is identical.
-export function parseXmltv(text) {
+export function parseXmltv(rawText) {
+  const text = stripComments(rawText);
   const warnings = [];
 
   const chMatch = /<channel\b([^>]*)>([\s\S]*?)<\/channel>/i.exec(text);
@@ -180,7 +206,8 @@ export function parseXmltv(text) {
 // type="remoteId"> inside each <event>. Matching <event> and reading the
 // optional nested remoteId covers both, so there's no need to sniff the
 // first entry's remoteId to pick a parsing mode.
-export function parseGracenoteSchedule(text) {
+export function parseGracenoteSchedule(rawText) {
+  const text = stripComments(rawText);
   const warnings = [];
   const programmes = [];
   let unparsedTimes = 0;
@@ -243,7 +270,7 @@ export function parseGracenoteSchedule(text) {
 
 // /Sources?prgSvcId=… — used only for the channel-name confirmation signal.
 export function parseGracenoteSourceName(text) {
-  return firstTagText("name", text);
+  return firstTagText("name", stripComments(text));
 }
 
 // ------------------------------------------------- what's actually playing

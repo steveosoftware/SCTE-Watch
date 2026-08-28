@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- REAL capture: GET /v3/Schedules?prgSvcId=157905 (Forensic Files), 2026-08-28.
+     Trimmed to 4 of 103 events; header/copyright block removed. Contains no
+     credential - the api_key is a request parameter and is not echoed in the
+     response body (verified before committing). This is the fixture that
+     pins the real serialization: time="HH:MM", dur="PT00H28M" (ISO 8601). -->
+<on schemaVersion="3.27"><schedules type="tv">
+  <schedule prgSvcId="157905" date="2026-08-28" updateId="24153278255" updateDate="2026-08-28T02:04:42Z" >
+  <event TMSId="EP022439260099" rootId="9131772" time="00:19" dur="PT00H28M" isGeneric="false" >
+  <quals>CC|HD 720p</quals>
+  <broadcast>
+  <id type="remoteId">XM0S73JEOMUUNL</id>
+  </broadcast>
+  </event>
+  <event TMSId="EP022439260098" rootId="9131758" time="00:47" dur="PT00H27M" isGeneric="false" >
+  <quals>CC|HD 720p</quals>
+  <broadcast>
+  <id type="remoteId">XM0OI2CZD2YFSP</id>
+  </broadcast>
+  </event>
+  <event TMSId="EP022439260097" rootId="9347354" time="01:14" dur="PT00H28M" isGeneric="false" >
+  <quals>CC|HD 720p</quals>
+  <broadcast>
+  <id type="remoteId">XM09PXNA2V8Z9X</id>
+  </broadcast>
+  </event>
+  <event TMSId="EP022439260096" rootId="9347370" time="01:42" dur="PT00H28M" isGeneric="false" >
+  <quals>CC|HD 720p</quals>
+  <broadcast>
+  <id type="remoteId">XM0WELVQ4SKJAP</id>
+  </broadcast>
+  </event>
+  </schedule>
+</schedules></on>

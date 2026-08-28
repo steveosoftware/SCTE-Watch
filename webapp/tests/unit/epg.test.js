@@ -78,10 +78,83 @@ describe("parseGracenoteTime", () => {
 });
 
 describe("parseDurationSeconds", () => {
-  test("accepts raw seconds", () => assert.equal(parseDurationSeconds("6193"), 6193));
-  test("accepts HH:MM:SS", () => assert.equal(parseDurationSeconds("1:43:13"), 6193));
-  test("accepts MM:SS", () => assert.equal(parseDurationSeconds("02:30"), 150));
-  test("returns null on garbage", () => assert.equal(parseDurationSeconds("soon"), null));
+  // ISO 8601 is what Gracenote actually emits — confirmed against a live
+  // response 2026-08-28. Handling only seconds/clock formats made every
+  // real duration parse to null, which nulled stopMs and made the whole
+  // schedule look empty. Regression-guarded here.
+  test("accepts the ISO 8601 form Gracenote really uses", () => {
+    assert.equal(parseDurationSeconds("PT00H28M"), 28 * 60);
+    assert.equal(parseDurationSeconds("PT01H43M13S"), 6193);
+  });
+
+  test("accepts ISO durations with components omitted", () => {
+    assert.equal(parseDurationSeconds("PT28M"), 1680);
+    assert.equal(parseDurationSeconds("PT2H"), 7200);
+    assert.equal(parseDurationSeconds("PT90S"), 90);
+    assert.equal(parseDurationSeconds("P1DT2H"), 86400 + 7200);
+  });
+
+  test("still accepts raw seconds and clock forms", () => {
+    assert.equal(parseDurationSeconds("6193"), 6193);
+    assert.equal(parseDurationSeconds("1:43:13"), 6193);
+    assert.equal(parseDurationSeconds("02:30"), 150);
+  });
+
+  test("returns null on garbage, including a bare P with no components", () => {
+    assert.equal(parseDurationSeconds("soon"), null);
+    assert.equal(parseDurationSeconds("P"), null);
+    assert.equal(parseDurationSeconds(""), null);
+  });
+});
+
+describe("parseGracenoteSchedule — against a REAL captured response", () => {
+  const real = fx("gracenote-schedule-real.xml");
+
+  test("parses the live response shape end to end", () => {
+    const { programmes, warnings } = parseGracenoteSchedule(real);
+    assert.equal(programmes.length, 4);
+    assert.deepEqual(warnings, [], "a healthy response should raise no warnings");
+  });
+
+  test("resolves real times from date + HH:MM (no seconds component)", () => {
+    const [first] = parseGracenoteSchedule(real).programmes;
+    assert.equal(first.rawTime, "00:19");
+    assert.equal(first.startMs, Date.UTC(2026, 7, 28, 0, 19, 0));
+  });
+
+  test("resolves the ISO duration and therefore a usable stopMs", () => {
+    const [first] = parseGracenoteSchedule(real).programmes;
+    assert.equal(first.durationS, 28 * 60);
+    assert.equal(first.stopMs, Date.UTC(2026, 7, 28, 0, 47, 0));
+  });
+
+  test("stopMs must be non-null or findScheduledAt can never match anything", () => {
+    // This is the exact failure that presented as "no schedule covering
+    // right now" against a live channel.
+    const { programmes } = parseGracenoteSchedule(real);
+    assert.ok(programmes.every((p) => p.stopMs !== null), "every entry needs an end time");
+    const mid = programmes[0].startMs + 60000;
+    assert.ok(findScheduledAt(normalizeGracenoteSchedule({ programmes }), mid), "must resolve a covering entry");
+  });
+
+  test("extracts the nested remoteId from a real stitched channel", () => {
+    const [first] = parseGracenoteSchedule(real).programmes;
+    assert.equal(first.remoteId, "XM0S73JEOMUUNL");
+    assert.equal(first.tmsId, "EP022439260099");
+  });
+
+  test("a real schedule drives a playback check", () => {
+    const sched = normalizeGracenoteSchedule(parseGracenoteSchedule(real));
+    const at = Date.UTC(2026, 7, 28, 0, 30, 0); // inside the first event
+    assert.equal(
+      comparePlaybackToSchedule({ liveEdgeAssetId: "XM0S73JEOMUUNL", transitions: [] }, sched, at).status,
+      "match"
+    );
+    assert.equal(
+      comparePlaybackToSchedule({ liveEdgeAssetId: "XMWRONGASSET01", transitions: [] }, sched, at).status,
+      "unscheduled"
+    );
+  });
 });
 
 describe("parseXmltv — movie channel", () => {

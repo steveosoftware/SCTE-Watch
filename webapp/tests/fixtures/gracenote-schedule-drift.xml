@@ -1,21 +1,23 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- SYNTHETIC. Structure inferred from the operator's scripts' XPaths;
-     the live Gracenote response has not been observed directly. Deliberately drifted vs xmltv-movies.xml: entry 1 starts 90s late, entry 3 has a different TMSId, entry 4 is missing entirely. -->
-<schedules>
-  <schedule prgSvcId="156201" date="2026-08-25" updateDate="2026-08-25">
-    <event time="22:59:17" dur="6193" TMSId="MV001824280000">
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- SYNTHETIC, but shaped after a real /Schedules response verified 2026-08-28:
+     ISO-8601 dur="PT..", <schedule prgSvcId date> > <event time dur TMSId>,
+     with a nested <broadcast><id type="remoteId"> on stitched channels.
+     Drifted vs xmltv-movies.xml: entry 1 starts 90s late, entry 3 has a different TMSId, entry 4 is missing. -->
+<on schemaVersion="3.27"><schedules type="tv">
+  <schedule prgSvcId="156201" date="2026-08-25" updateDate="2026-08-25T02:00:00Z" >
+    <event TMSId="MV001824280000" time="22:59:17" dur="PT01H43M13S" isGeneric="false" >
       <broadcast><id type="remoteId">XM03Z0K05Q9CN4</id></broadcast>
     </event>
   </schedule>
-  <schedule prgSvcId="156201" date="2026-08-26" updateDate="2026-08-26">
-    <event time="00:44:00" dur="5827" TMSId="MV001946210000">
+  <schedule prgSvcId="156201" date="2026-08-26" updateDate="2026-08-26T02:00:00Z" >
+    <event TMSId="MV001946210000" time="00:44:00" dur="PT01H37M07S" isGeneric="false" >
       <broadcast><id type="remoteId">XM0TLMJI3110XZ</id></broadcast>
     </event>
-    <event time="02:19:37" dur="6023" TMSId="MV009999990000">
+    <event TMSId="MV009999990000" time="02:19:37" dur="PT01H40M23S" isGeneric="false" >
       <broadcast><id type="remoteId">XM0MA34LLB2ARR</id></broadcast>
     </event>
-    <event time="04:00:00" dur="5663" TMSId="MV0DIFFERENT00">
+    <event TMSId="MV0DIFFERENT00" time="04:00:00" dur="PT01H34M23S" isGeneric="false" >
       <broadcast><id type="remoteId">XM0OAPIELO55UX</id></broadcast>
     </event>
   </schedule>
-</schedules>
+</schedules></on>
