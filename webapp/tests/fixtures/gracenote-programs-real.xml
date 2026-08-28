@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- REAL capture: GET /v3/Programs?tmsId=... for prgSvcId 157905, 2026-08-28.
+     Trimmed to 2 programs and to the fields the parser reads. No credential:
+     api_key is a request parameter and is not echoed in the response body.
+     Note this series returns NO <episodeTitle> - only <title type="full"> plus
+     <episodeInfo season number>, which is why displayTitle falls back to SxxExx. -->
+<on schemaVersion="3.27"><programs>
+  <program TMSId="EP022439260099" rootId="9131772" connectorId="SH022439260000" seasonId="14727240" seriesId="439881" updateId="106596227483" updateDate="2026-04-20T22:08:37Z" >
+    <titles lang="en">
+    <title size="120" type="full" subType="Main" lang="en">Forensic Files</title>
+    <title size="70" type="red" lang="en">Forensic Files</title>
+    <title size="40" type="red" lang="en">Forensic Files</title>
+    <title size="20" type="red" lang="en">Forensic Files</title>
+    <title size="10" type="red" lang="en">Forensic</title>
+    </titles>
+    <episodeInfo season="13" number="31" numInSeries="360">
+    <origAirDate>2009-10-02</origAirDate>
+  </program>
+  <program TMSId="EP022439260098" rootId="9131758" connectorId="SH022439260000" seasonId="14727240" seriesId="439881" updateId="106596308148" updateDate="2026-04-20T22:09:07Z" >
+    <titles lang="en">
+    <title size="120" type="full" subType="Main" lang="en">Forensic Files</title>
+    <title size="70" type="red" lang="en">Forensic Files</title>
+    <title size="40" type="red" lang="en">Forensic Files</title>
+    <title size="20" type="red" lang="en">Forensic Files</title>
+    <title size="10" type="red" lang="en">Forensic</title>
+    </titles>
+    <episodeInfo season="13" number="32" numInSeries="361">
+    <origAirDate>2009-10-16</origAirDate>
+  </program>
+</programs></on>

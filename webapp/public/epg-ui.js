@@ -26,6 +26,12 @@ import {
   comparePlaybackToSchedule,
   buildObservationCsv,
   gracenoteScheduleUrl,
+  gracenoteProgramsUrl,
+  parseGracenotePrograms,
+  attachProgramTitles,
+  distinctTmsIds,
+  chunk,
+  PROGRAMS_BATCH_SIZE,
   xumoAssetUrl,
   parseXumoAsset,
   isLikelyFiller,
@@ -176,7 +182,34 @@ async function loadSchedule() {
   );
   scheduleLabel = `Gracenote · prgSvcId ${prgSvcId}`;
   for (const w of parsed.warnings) appendLog(escapeHtml(`⚠ ${w}`));
-  return normalizeGracenoteSchedule(parsed);
+  let sched = normalizeGracenoteSchedule(parsed);
+
+  // /Schedules carries no titles, only TMS ids. Fetch them from /Programs
+  // so the report is readable — batched over distinct ids, and entirely
+  // best-effort: a failure here costs titles, never the comparison.
+  const ids = distinctTmsIds(sched);
+  if (ids.length) {
+    const batches = chunk(ids, PROGRAMS_BATCH_SIZE);
+    statusEl.textContent = `Fetching titles for ${ids.length} programmes…`;
+    const merged = new Map();
+    let failed = 0;
+    for (const batch of batches) {
+      try {
+        const text = (await fetchViaProxy(gracenoteProgramsUrl({ apiKey, tmsIds: batch }))).text;
+        for (const [k, v] of parseGracenotePrograms(text)) merged.set(k, v);
+      } catch {
+        failed += 1;
+      }
+    }
+    if (merged.size) sched = attachProgramTitles(sched, merged);
+    appendLog(
+      escapeHtml(
+        `titles: resolved ${merged.size} of ${ids.length} distinct programmes` +
+          (failed ? ` (${failed} of ${batches.length} batches failed)` : "")
+      )
+    );
+  }
+  return sched;
 }
 
 // Accepts either a master or a media playlist. A master gets resolved to

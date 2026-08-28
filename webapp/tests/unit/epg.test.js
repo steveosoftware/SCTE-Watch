@@ -25,6 +25,12 @@ import {
   xumoAssetUrl,
   parseXumoAsset,
   isLikelyFiller,
+  parseGracenotePrograms,
+  attachProgramTitles,
+  distinctTmsIds,
+  chunk,
+  gracenoteProgramsUrl,
+  PROGRAMS_BATCH_SIZE,
 } from "../../public/epg.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -609,6 +615,98 @@ describe("schedule normalizers", () => {
     );
     assert.equal(viaXmltv.status, "match");
     assert.equal(viaGn.status, "match");
+  });
+});
+
+describe("parseGracenotePrograms — against a REAL captured response", () => {
+  const real = fx("gracenote-programs-real.xml");
+
+  test("keys programs by TMS id", () => {
+    const m = parseGracenotePrograms(real);
+    assert.equal(m.size, 2);
+    assert.ok(m.has("EP022439260099"));
+  });
+
+  test("prefers the full title over the truncated 'red' variants", () => {
+    const p = parseGracenotePrograms(real).get("EP022439260099");
+    // the same block also carries size=10 type=red "Forensic" — must not win
+    assert.equal(p.title, "Forensic Files");
+  });
+
+  test("extracts episode info and original air date", () => {
+    const p = parseGracenotePrograms(real).get("EP022439260099");
+    assert.equal(p.season, "13");
+    assert.equal(p.number, "31");
+    assert.equal(p.origAirDate, "2009-10-02");
+  });
+
+  test("falls back to SxxExx when the series carries no <episodeTitle>", () => {
+    // Forensic Files genuinely returns no episodeTitle — verified live
+    const p = parseGracenotePrograms(real).get("EP022439260099");
+    assert.equal(p.episodeTitle, null);
+    assert.equal(p.displayTitle, "Forensic Files S13E31");
+  });
+
+  test("prefers a real episode title when one is present", () => {
+    const m = parseGracenotePrograms(
+      '<programs><program TMSId="EP1"><titles><title type="full">Some Series</title></titles>' +
+        "<episodeTitle>Palm Saturday</episodeTitle>" +
+        '<episodeInfo season="2" number="5"></episodeInfo></program></programs>'
+    );
+    assert.equal(m.get("EP1").displayTitle, "Some Series — Palm Saturday");
+  });
+
+  test("a program with neither episode title nor episode info still yields the series name", () => {
+    const m = parseGracenotePrograms(
+      '<programs><program TMSId="MV1"><titles><title type="full">Some Movie</title></titles></program></programs>'
+    );
+    assert.equal(m.get("MV1").displayTitle, "Some Movie");
+  });
+});
+
+describe("attachProgramTitles / batching", () => {
+  const sched = normalizeGracenoteSchedule(parseGracenoteSchedule(fx("gracenote-schedule-real.xml")));
+  const programs = parseGracenotePrograms(fx("gracenote-programs-real.xml"));
+
+  test("fills titles in on matching entries", () => {
+    const withTitles = attachProgramTitles(sched, programs);
+    const first = withTitles.find((p) => p.tmsId === "EP022439260099");
+    assert.equal(first.title, "Forensic Files S13E31");
+    assert.equal(first.program.origAirDate, "2009-10-02");
+  });
+
+  test("leaves unmatched entries untouched — titles must never break the comparison", () => {
+    const withTitles = attachProgramTitles(sched, new Map());
+    assert.deepEqual(withTitles, sched);
+  });
+
+  test("preserves the fields the comparison actually depends on", () => {
+    const withTitles = attachProgramTitles(sched, programs);
+    for (let i = 0; i < sched.length; i++) {
+      assert.equal(withTitles[i].startMs, sched[i].startMs);
+      assert.equal(withTitles[i].stopMs, sched[i].stopMs);
+      assert.equal(withTitles[i].assetId, sched[i].assetId);
+    }
+  });
+
+  test("distinctTmsIds dedupes — a title airing repeatedly is one lookup, not many", () => {
+    const dup = [{ tmsId: "A" }, { tmsId: "B" }, { tmsId: "A" }, { tmsId: null }];
+    assert.deepEqual(distinctTmsIds(dup), ["A", "B"]);
+  });
+
+  test("chunk splits a long id list so the query string stays sane", () => {
+    const ids = Array.from({ length: 120 }, (_, i) => "EP" + i);
+    const batches = chunk(ids, PROGRAMS_BATCH_SIZE);
+    assert.equal(batches.length, 3);
+    assert.equal(batches[0].length, 50);
+    assert.equal(batches[2].length, 20);
+    assert.equal(batches.flat().length, 120, "no ids lost");
+  });
+
+  test("a full batch URL stays a reasonable length", () => {
+    const ids = Array.from({ length: PROGRAMS_BATCH_SIZE }, () => "EP022439260099");
+    const url = gracenoteProgramsUrl({ apiKey: "k", tmsIds: ids });
+    assert.ok(url.length < 1500, `URL was ${url.length} chars`);
   });
 });
 

@@ -230,6 +230,26 @@ Ran end to end against a real channel (`88893069`) and a real Gracenote schedule
 
 **3. Channel pairing still can't be auto-verified in Gracenote mode.** `/Sources?prgSvcId=157905` returns `<callSign>XRGFF</callSign>` plus `<URL>https://play.xumo.com/live-guide/forensic-files</URL>` and `countriesOfCoverage: CAN`. The callsign is the same one used in the XMLTV URL pattern `{xumoChannelId}_{callSign}.xml`, so it's a partial bridge — but nothing in either feed yields the Xumo *channel* id, so the pairing remains a user assertion. Worth revisiting if a channel-id ↔ prgSvcId mapping ever turns up.
 
+### Titles on both sides — 2026-08-28
+
+`/Schedules` returns TMS ids and no titles, so a report read as bare `EP0224…` / `XM0…` strings. Titles now come from a second `/Programs?tmsId=A,B,C` call: distinct ids only (a title airs repeatedly), chunked at 50 per request so a 14-day window can't produce an over-long URL, issued once per schedule load, and fully best-effort — losing it costs titles, never the comparison.
+
+Two shape details worth knowing: Gracenote's `<titles>` block carries truncated `type="red"` variants alongside the real one (Forensic Files degrades to just `"Forensic"` at size 10), so the parser explicitly prefers `type="full"`; and this series returns **no `<episodeTitle>`** at all, only `<episodeInfo season number>`, so `displayTitle` falls back to `Forensic Files S13E41`.
+
+The two lookups turn out to be complementary — Xumo's asset endpoint gives the *episode name*, Gracenote gives the *season/episode number*:
+
+```
+✓ correct asset playing · playing XM0YNWLNHUP8YD — Shoe-In For Murder
+                        · expected XM0YNWLNHUP8YD (Forensic Files S13E41)
+```
+
+**Verified against production**, both modes, real browser, no stubs:
+
+- **Gracenote**: channel `88893069` + `prgSvcId 157905` → `match`, 52/52 titles resolved, no console errors, API key absent from the DOM, CSV export correct.
+- **XMLTV**: correctly flagged a deliberately mispaired channel (playback `88884008` vs XMLTV `88840011`) as `unscheduled`, resolving the playing asset to `Lone Star Shark (MOVIE, 3915s)` — not filler, so it warns rather than treating it as routine.
+
+**The 88893069 ↔ 157905 pairing is confirmed correct.** The earlier `UNSCHEDULED` verdict on that same pair was the channel sitting in an ad break, not a mispairing — my initial read of that was wrong.
+
 **Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — now largely moot, since asset ids answer the question directly without needing program boundaries at all.
 
 ---

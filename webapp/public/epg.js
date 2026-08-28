@@ -617,6 +617,79 @@ export function gracenoteSourceUrl({ apiKey, prgSvcId }) {
   return `https://on-api.gracenote.com/v3/Sources?${q}`;
 }
 
+// /Schedules returns TMS ids but NO titles — those live in /Programs,
+// which takes a comma-joined batch. A 14-day window can carry several
+// hundred distinct ids, which would blow past a sane URL length, so
+// callers chunk. 50 ids is ~750 characters of query string.
+export const PROGRAMS_BATCH_SIZE = 50;
+
+export function gracenoteProgramsUrl({ apiKey, tmsIds }) {
+  const q = new URLSearchParams({ api_key: apiKey, tmsId: tmsIds.join(",") });
+  return `https://on-api.gracenote.com/v3/Programs?${q}`;
+}
+
+export function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// Distinct TMS ids in a schedule. A title airs repeatedly, so deduping
+// here is the difference between one /Programs batch and several.
+export function distinctTmsIds(schedule) {
+  return [...new Set(schedule.map((p) => p.tmsId).filter(Boolean))];
+}
+
+// Returns Map<TMSId, {title, episodeTitle, season, number, origAirDate,
+// displayTitle}>. `displayTitle` is what the UI shows: an episode title
+// when the series provides one, otherwise the series name plus SxxExx —
+// Forensic Files, for instance, returns no <episodeTitle> at all, only
+// <episodeInfo season number>.
+export function parseGracenotePrograms(xmlText) {
+  const text = stripComments(xmlText);
+  const map = new Map();
+  const re = /<program\b([^>]*)>([\s\S]*?)<\/program>/gi;
+  let m;
+  while ((m = re.exec(text))) {
+    const [, attrs, body] = m;
+    const tmsId = attr("TMSId", attrs);
+    if (!tmsId) continue;
+
+    // Prefer the unabbreviated title; Gracenote also emits truncated
+    // "red" (reduced) variants at several sizes.
+    const full = /<title\b[^>]*\btype\s*=\s*"full"[^>]*>([\s\S]*?)<\/title>/i.exec(body);
+    const title = full ? unescapeXml(stripCdata(full[1]).trim()) : firstTagText("title", body);
+    const episodeTitle = firstTagText("episodeTitle", body);
+    const epInfo = /<episodeInfo\b([^>]*)>/i.exec(body);
+    const season = epInfo ? attr("season", epInfo[1]) : null;
+    const number = epInfo ? attr("number", epInfo[1]) : null;
+
+    let displayTitle = title;
+    if (episodeTitle) displayTitle = title ? `${title} — ${episodeTitle}` : episodeTitle;
+    else if (season && number) displayTitle = `${title ?? "?"} S${season}E${number}`;
+
+    map.set(tmsId, {
+      title,
+      episodeTitle,
+      season,
+      number,
+      origAirDate: firstTagText("origAirDate", body),
+      displayTitle,
+    });
+  }
+  return map;
+}
+
+// Fills in `title` on a normalized schedule from a /Programs lookup.
+// Non-destructive: entries with no match keep whatever they had, since
+// titles are a display nicety and must never break the comparison.
+export function attachProgramTitles(schedule, programMap) {
+  return schedule.map((p) => {
+    const info = p.tmsId ? programMap.get(p.tmsId) : null;
+    return info && info.displayTitle ? { ...p, title: info.displayTitle, program: info } : p;
+  });
+}
+
 // The observation log from a monitoring run — one row per poll that
 // changed something, so a session can be handed to someone else as
 // evidence rather than screenshotted.
