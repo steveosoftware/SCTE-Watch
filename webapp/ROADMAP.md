@@ -250,6 +250,17 @@ The two lookups turn out to be complementary — Xumo's asset endpoint gives the
 
 **The 88893069 ↔ 157905 pairing is confirmed correct.** The earlier `UNSCHEDULED` verdict on that same pair was the channel sitting in an ad break, not a mispairing — my initial read of that was wrong.
 
+### Transition reporting fixed — 2026-08-28
+
+Live testing surfaced noisy output: one status change followed by seven "asset change in window" lines, the same two transitions repeated at slightly different times each poll. Two distinct bugs:
+
+1. **The transition log sat outside the "only on change" guard**, so every poll re-reported every transition still inside the ~60s playlist window.
+2. **The reported time moved between polls** — 13:08:17, then :22, then :20 for the same event. Inherent to anchoring the timeline at the live edge: between polls the wall clock advances but the playlist only advances in whole segments, so the whole interpolated timeline slides by up to a segment duration.
+
+Fixed by giving each transition a stable identity: the `#EXT-X-MEDIA-SEQUENCE` number of the new asset's first segment. Sequence numbers don't move when the window slides. The first sighting is kept as the best time estimate (fewest segments between the transition and the live-edge anchor), which also stops the drift figure jittering. Guarded by an e2e test that polls an unchanged straddling window repeatedly and asserts exactly one transition line.
+
+The drift line now also states its own accuracy — `±1 segment; estimated from the live edge, no PROGRAM-DATE-TIME in this stream` — since a figure like `+503s` should not be read as second-accurate.
+
 **Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — now largely moot, since asset ids answer the question directly without needing program boundaries at all.
 
 ---

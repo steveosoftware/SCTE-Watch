@@ -271,6 +271,57 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  test("EPG drift: a transition is reported ONCE, not re-reported every poll", async () => {
+    const { page } = await newPage();
+    const now = Date.now();
+    // A window that straddles an asset change and never rolls, so the same
+    // transition stays visible across every poll. Before the sequence-based
+    // dedupe this re-logged the event on each poll, with a wall-clock
+    // estimate that drifted by a segment each time.
+    const seg = (asset, n) => `https://live-content-cf.xumo.com/149/content/${asset}/1/6_00${n}.ts`;
+    const playlist =
+      `#EXTM3U\n#EXT-X-TARGETDURATION:7\n#EXT-X-MEDIA-SEQUENCE:5000\n` +
+      `#EXTINF:6.000,\n${seg("XMOLDASSET0001", 1)}\n` +
+      `#EXTINF:6.000,\n${seg("XMOLDASSET0001", 2)}\n` +
+      `#EXTINF:6.000,\n${seg("XM08RIB78GYPVR", 3)}\n` +
+      `#EXTINF:6.000,\n${seg("XM08RIB78GYPVR", 4)}\n`;
+
+    await page.route("**/api/fetch**", async (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const reply = (text) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ text, finalUrl: target, headers: {} }),
+        });
+      if (target.includes("xmltv")) return reply(xmltvAround(now, "XM08RIB78GYPVR"));
+      if (target.includes(".m3u8")) return reply(playlist);
+      return route.continue(); // asset lookup may 4xx; handled best-effort
+    });
+
+    await page.goto(BASE_URL);
+    await page.check('input[name="epg-source"][value="xmltv"]');
+    await page.fill("#epg-playback-url", "https://example.test/channel/media.m3u8");
+    await page.fill("#epg-xmltv-url", "https://example.test/epg/xmltv/1_TEST.xml");
+    await page.fill("#epg-interval", "1");
+    await page.click("#epg-run");
+    await page.waitForFunction(
+      () => (document.getElementById("epg-output")?.textContent || "").includes("asset transition:"),
+      { timeout: 15000 }
+    );
+    // let several more polls run over the same unchanged window
+    await new Promise((r) => setTimeout(r, 5000));
+    await page.click("#epg-stop");
+
+    const log = await page.textContent("#epg-output");
+    const lines = log.split("\n").filter((l) => l.includes("asset transition:"));
+    assert.equal(lines.length, 1, `expected exactly one transition line, got:\n${lines.join("\n")}`);
+    assert.match(lines[0], /XMOLDASSET0001 → XM08RIB78GYPVR/);
+    assert.match(lines[0], /segment #5002/, "identified by media sequence, not by its shifting time estimate");
+
+    await page.close();
+  });
+
   test("EPG drift: schedule source toggle swaps which fields are shown", async () => {
     const { page } = await newPage();
     await page.goto(BASE_URL);

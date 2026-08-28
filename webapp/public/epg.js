@@ -311,6 +311,13 @@ export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
   const segments = [];
   let pendingDuration = null;
 
+  // #EXT-X-MEDIA-SEQUENCE numbers the first segment in the window, and
+  // every segment after it increments. That gives each segment — and so
+  // each transition — a STABLE identity that survives the playlist window
+  // sliding, which the estimated wall-clock time does not.
+  const seqMatch = /^#EXT-X-MEDIA-SEQUENCE:\s*(\d+)/m.exec(String(text || ""));
+  const mediaSequence = seqMatch ? Number(seqMatch[1]) : null;
+
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
@@ -324,6 +331,7 @@ export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
       url: line,
       durationS: pendingDuration ?? 0,
       assetId: extractAssetId(line),
+      sequence: mediaSequence === null ? null : mediaSequence + segments.length,
     });
     pendingDuration = null;
   }
@@ -344,6 +352,11 @@ export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
         fromAssetId: segments[i - 1].assetId,
         toAssetId: segments[i].assetId,
         atMs: segments[i].startMs,
+        // Identity of the transition, stable across polls. atMs is only an
+        // estimate and shifts by up to a segment duration as the window
+        // slides; the sequence number of the first segment of the new
+        // asset does not move.
+        atSequence: segments[i].sequence,
       });
     }
   }
@@ -351,6 +364,7 @@ export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
   const last = segments[segments.length - 1];
   return {
     segments,
+    mediaSequence,
     liveEdgeAssetId: last ? last.assetId : null,
     transitions,
     windowSeconds: segments.reduce((a, s) => a + s.durationS, 0),

@@ -500,6 +500,38 @@ describe("parseMediaPlaylistAssets", () => {
     assert.equal(t.atMs, NOW - 18000);
   });
 
+  test("numbers segments from #EXT-X-MEDIA-SEQUENCE", () => {
+    const r = parseMediaPlaylistAssets(playlist, NOW);
+    assert.equal(r.mediaSequence, 661263);
+    assert.deepEqual(
+      r.segments.map((s) => s.sequence),
+      [661263, 661264, 661265, 661266, 661267]
+    );
+  });
+
+  test("a transition carries the sequence number of the new asset's first segment", () => {
+    const r = parseMediaPlaylistAssets(transition, NOW);
+    // fixture starts at 661300; the 3rd segment (index 2) begins the new asset
+    assert.equal(r.transitions[0].atSequence, 661302);
+  });
+
+  test("the sequence identity is stable while the estimated time is not", () => {
+    // The same playlist read at two different moments: the interpolated
+    // wall-clock time shifts, but the identity must not — this is what
+    // stops one transition being reported over and over as the window
+    // slides.
+    const a = parseMediaPlaylistAssets(transition, NOW);
+    const b = parseMediaPlaylistAssets(transition, NOW + 4000);
+    assert.notEqual(a.transitions[0].atMs, b.transitions[0].atMs, "the time estimate does move");
+    assert.equal(a.transitions[0].atSequence, b.transitions[0].atSequence, "the identity must not");
+  });
+
+  test("sequence is null when the playlist omits MEDIA-SEQUENCE, without throwing", () => {
+    const r = parseMediaPlaylistAssets("#EXTM3U\n#EXTINF:6.0,\nhttps://x/content/XMAAA/1/a.ts\n", NOW);
+    assert.equal(r.mediaSequence, null);
+    assert.equal(r.segments[0].sequence, null);
+  });
+
   test("an empty playlist yields nothing rather than throwing", () => {
     const r = parseMediaPlaylistAssets("#EXTM3U\n", NOW);
     assert.equal(r.segments.length, 0);

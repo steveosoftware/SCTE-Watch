@@ -90,6 +90,21 @@ let scheduleLabel = "";
 let lastStatusKey = null;
 const assetInfoCache = new Map();
 
+// Transitions seen so far this session, keyed by the media-sequence number
+// of the first segment of the new asset.
+//
+// Two problems this solves. First, a transition stays visible for as long
+// as it's inside the playlist window (~60s), so re-reading it every poll
+// re-reports the same event several times. Second, its wall-clock time is
+// an ESTIMATE interpolated backwards from the live edge, and it shifts by
+// up to a segment duration between polls as the window slides — so the
+// same event appeared at 13:08:17, then :22, then :20. The sequence number
+// doesn't move, so it's the identity; and the FIRST sighting is the most
+// accurate estimate (fewest segments between the transition and the anchor
+// at the live edge), so first write wins.
+const seenTransitions = new Map();
+const MAX_SEEN_TRANSITIONS = 500;
+
 // One lookup per distinct asset, not per poll. Best-effort: a failure here
 // must never sink the comparison, which is the actual job.
 async function describeAsset(assetId) {
@@ -229,7 +244,27 @@ async function poll() {
     const { text } = await fetchViaProxy(mediaPlaylistUrl);
     const nowMs = Date.now();
     const playback = parseMediaPlaylistAssets(text, nowMs);
-    const result = comparePlaybackToSchedule(playback, schedule, nowMs);
+
+    // Record only transitions we haven't already logged, and keep each
+    // one's first (best) time estimate rather than the latest wobble.
+    const freshTransitions = [];
+    for (const t of playback.transitions) {
+      const id = t.atSequence ?? `${t.fromAssetId}->${t.toAssetId}@${t.atMs}`;
+      if (!seenTransitions.has(id)) {
+        seenTransitions.set(id, t);
+        freshTransitions.push(t);
+      }
+    }
+    if (seenTransitions.size > MAX_SEEN_TRANSITIONS) {
+      for (const k of [...seenTransitions.keys()].slice(0, seenTransitions.size - MAX_SEEN_TRANSITIONS)) {
+        seenTransitions.delete(k);
+      }
+    }
+
+    // Compare against the stable set, so the drift figure stops jittering
+    // once a transition has been observed.
+    const stablePlayback = { ...playback, transitions: [...seenTransitions.values()] };
+    const result = comparePlaybackToSchedule(stablePlayback, schedule, nowMs);
     const info = await describeAsset(result.playingAssetId);
 
     renderVerdict(result, nowMs, info);
@@ -266,15 +301,18 @@ async function poll() {
       if (result.drift) {
         appendLog(
           escapeHtml(
-            `    transition observed ${ts(result.drift.observedStartMs)} vs scheduled ` +
-              `${ts(result.drift.scheduledStartMs)} → ${result.drift.seconds > 0 ? "+" : ""}${result.drift.seconds}s`
+            `    started ~${ts(result.drift.observedStartMs)}, scheduled ${ts(result.drift.scheduledStartMs)}` +
+              ` → ${result.drift.seconds > 0 ? "+" : ""}${result.drift.seconds}s` +
+              ` (±1 segment; estimated from the live edge, no PROGRAM-DATE-TIME in this stream)`
           )
         );
       }
     }
 
-    for (const t of playback.transitions) {
-      appendLog(escapeHtml(`    asset change in window: ${t.fromAssetId} → ${t.toAssetId} at ${ts(t.atMs)}`));
+    // Only newly-seen transitions, so an event is reported once.
+    for (const t of freshTransitions) {
+      const at = t.atSequence !== null && t.atSequence !== undefined ? ` (segment #${t.atSequence})` : "";
+      appendLog(escapeHtml(`    asset transition: ${t.fromAssetId} → ${t.toAssetId} at ~${ts(t.atMs)}${at}`));
     }
 
     statusEl.textContent = `Watching · ${observations.length} event(s) logged`;
@@ -302,6 +340,7 @@ runBtn.addEventListener("click", async () => {
   statusEl.classList.remove("warn");
   observations = [];
   lastStatusKey = null;
+  seenTransitions.clear();
   downloadBtn.disabled = true;
 
   const playbackUrl = playbackInput.value.trim();
