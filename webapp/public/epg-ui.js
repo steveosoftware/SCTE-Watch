@@ -93,6 +93,18 @@ const STATUS_TEXT = {
   "no-schedule": "· schedule has no entry covering right now",
 };
 
+// "unscheduled" has two very different causes and they need telling apart.
+// Real drift almost always shows up as `wrong-asset` — the channel plays
+// something that IS on the schedule, just at the wrong moment. An asset
+// appearing nowhere in the schedule at all is far more often a mispaired
+// channel: the playback URL and the schedule id refer to different
+// channels. Nothing in either feed links the two id namespaces (Xumo
+// channel id vs Gracenote prgSvcId), so the tool cannot check the pairing
+// itself and has to say so rather than report confident nonsense.
+const PAIRING_HINT =
+  "if this persists, check the channel pairing — an asset that appears nowhere " +
+  "in the schedule usually means the playback URL and the schedule are different channels";
+
 function renderVerdict(result, nowMs) {
   const bad = result.status === "wrong-asset" || result.status === "unscheduled";
   verdictEl.className = "status " + (bad ? "warn" : "");
@@ -106,7 +118,11 @@ function renderVerdict(result, nowMs) {
     const d = result.drift.seconds;
     parts.push(`${glossaryTerm("start-time drift")} ${d > 0 ? "+" : ""}${d}s`);
   }
-  verdictEl.innerHTML = parts.join(" &nbsp;·&nbsp; ") + ` &nbsp;·&nbsp; ${ts(nowMs)}Z`;
+  let html = parts.join(" &nbsp;·&nbsp; ") + ` &nbsp;·&nbsp; ${ts(nowMs)}Z`;
+  if (result.status === "unscheduled") {
+    html += `<br><span class="note">${escapeHtml(PAIRING_HINT)}</span>`;
+  }
+  verdictEl.innerHTML = html;
 }
 
 async function loadSchedule() {
@@ -177,6 +193,7 @@ async function poll() {
             `expected=${expected}${title}`
         )
       );
+      if (result.status === "unscheduled") appendLog(escapeHtml(`    ${PAIRING_HINT}`));
       if (result.drift) {
         appendLog(
           escapeHtml(
