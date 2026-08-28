@@ -6,7 +6,7 @@ No AI/Claude/Anthropic branding anywhere in this project — keep it that way (n
 
 ## Repo state
 
-Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (still just the initial commit — stale, not what's deployed), `staging` (tracks `origin/staging`, fast-forwarded to match `roadmap` as of 2026-08-18), and `roadmap` (tracks `origin/roadmap` — **this is the active working branch**; Phases 0–3 of ROADMAP.md all landed here). Working tree is clean as of 2026-08-18.
+Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (still just the initial commit — stale, not what's deployed), `staging` (tracks `origin/staging`, fast-forwarded to match `roadmap` as of 2026-08-18), and `roadmap` (tracks `origin/roadmap` — **this is the active working branch**; Phases 0–3, the VAST/VMAP validator, and the EPG drift panel all landed here). Working tree clean and fully pushed as of 2026-08-28. `staging` has NOT been fast-forwarded since 2026-08-18, so it is now well behind.
 
 **Live deploy**: https://roadmap.d3qk02ponpvf7m.amplifyapp.com/ — Amplify app `SCTE-Watch` (`d3qk02ponpvf7m`, `us-east-1`), branch `roadmap`, no password gate yet (see Phase 3 notes in ROADMAP.md — the endpoints are public and unauthenticated right now).
 
@@ -20,6 +20,23 @@ Future planning/scoping lives in `ROADMAP.md` alongside this file — check it b
   - The platform side is **Xumo XMLTV at a fetchable URL** (`https://carbon.xumo.com/epg/xmltv/{xumoChannelId}_{callsign}.xml`), confirmed 2026-08-25 — not the manual file export the scripts read. So the web version can automate both sides through the existing proxy.
   - Relevant for that work: the operator's channels span both Xumo-stitched and simulcast types, which the Gracenote `/Schedules` response shape differs between.
   - **Full write-up — API shape, join-key analysis, the decisions taken, and the defects worth not reproducing — is in ROADMAP.md's Gracenote section.** Read that before touching this feature; it is the authoritative record, not this bullet.
+
+## Verified reference data (Xumo / Gracenote)
+
+Real values confirmed against live endpoints 2026-08-28 — useful for picking up this work without re-deriving it:
+
+| | value |
+|---|---|
+| Gracenote `prgSvcId` | `157905` → "Forensic Files", `callSign` `XRGFF`, `countriesOfCoverage` CAN |
+| Paired playback channel | `88893069` — **confirmed the correct pairing** for 157905 (a `match` verdict against a live episode) |
+| Playback URL shape | `https://hls-cf.xumo.com/channel-hls/v3/{token}/{channelId}/master.m3u8` |
+| Segment / asset id | `https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_004.ts` — id is the `/content/` path segment |
+| Segment CDN hosts seen | `live-content.xumo.com`, `live-content.cdn.xumo.com`, `live-content-cf.xumo.com` (host varies; the path does not) |
+| XMLTV feed | `https://carbon.xumo.com/epg/xmltv/{xumoChannelId}_{callSign}.xml` — e.g. `88840011_XSNFH`, `88840016_XSNFF` |
+| Xumo asset lookup | `https://valencia-app-mds.xumo.com/v2/assets/asset/{assetId}.json?f=title,contentType,runtime` — public, no auth; gives title + `EPISODIC`/`MOVIE`/`SHORT-FORM` |
+| Known asset ids | `XM05M7E0PC09SI` = "Forensic Files EN Ad Slate 2026 2 Minutes" (SHORT-FORM, 120s — an ad slate, useful for testing the filler path) |
+
+Note the two schedule sources describe the same airing differently: Xumo's asset lookup gives the **episode name** ("Shoe-In For Murder"), Gracenote gives the **season/episode number** (S13E41). Neither alone is complete.
 
 ## Public-facing app — credential policy
 
@@ -154,7 +171,7 @@ Any recognized SCTE-35/HLS term in decoded output (splice command names, segment
 
 - **`pts_adjustment` bug — fixed** (2026-08-16). Was documented but never applied; now added to every absolute PTS, never to `break_duration` (a relative span). Regression-tested.
 - **`/api/fetch` SSRF hardening — done** (2026-08-16), in `ssrf-guard.js`. Blocks loopback/RFC1918/link-local (incl. cloud IMDS)/CGNAT + IPv6 equivalents, re-validates every redirect hop instead of blindly following, caps response size at 20MB. Verified with unit tests, e2e tests (via an explicit test-only bypass env var, `SSRF_GUARD_ALLOW_PRIVATE_TARGETS`, off by default), and a manual check against the real running server. **Known remaining gap, documented in the file**: doesn't pin the TCP connection to the pre-validated IP, so a DNS-rebinding attack (address changes between our check and fetch's own re-resolution) isn't fully closed — worth revisiting when this lands on a public Lambda (Phase 3).
-- **Test suite exists now**: 95 unit tests + 8 e2e tests, all passing. See ROADMAP.md Phase 0 and the "Running it" section above.
+- **Test suite**: 269 unit + 17 e2e, all passing as of 2026-08-28. See ROADMAP.md Phase 0 and the "Running it" section above. (Counts move constantly — re-run rather than trusting this number.)
 - DASH playback was verified end-to-end with a headless-browser test against `dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd` — real frame decode, stats, variants table, and manifest all confirmed working (2026-08-13); now a permanent e2e test.
 - The server previously crashed entirely (unhandled exception, not just a 400) on a malformed request URL — fixed by wrapping the `new URL(...)` parse in try/catch in `server.js`; now covered by an e2e test too.
 - `/api/log` (old "save watch log to server file" feature) was removed along with the old Watch panel — dead code, nothing calls it anymore.

@@ -25,7 +25,7 @@ Update this alongside `CONTEXT.md` as items land.
 
 ## Phase 0 — Testing foundation ✅ Done
 
-- `tests/unit/` — 95 tests via Node's built-in `node:test`, zero new runtime dependency. Covers `scte35.js` (decoder golden-file suite, `pts_adjustment` regression, wallclock timeline, DASH EventStream/ContentProtection parsing, continuity checks), `glossary.js` (including the XSS-invariant suite), `net.js`, and `ssrf-guard.js`.
+- `tests/unit/` — Node's built-in `node:test`, zero new runtime dependency (95 at the time of Phase 0; 269 as of 2026-08-28 — re-run rather than trusting a number written here). Covers `scte35.js` (decoder golden-file suite, `pts_adjustment` regression, wallclock timeline, DASH EventStream/ContentProtection parsing, continuity checks), `glossary.js` (including the XSS-invariant suite), `net.js`, and `ssrf-guard.js`.
 - `tests/fixtures/` — committed HLS/DASH fixtures (real captured + clearly-labeled synthetic ones for cases real streams didn't happen to exercise, like `pts_adjustment` and multi-DRM). All unit and offline e2e tests run against these, never live URLs.
 - `tests/e2e/playback.test.js` — real headless Chromium (Playwright, devDependency) against a real spawned `server.js`. Two tiers:
   - **offline/deterministic** (6 tests) — fixtures served by a throwaway local HTTP server spun up in the test file; safe anywhere, never flaky.
