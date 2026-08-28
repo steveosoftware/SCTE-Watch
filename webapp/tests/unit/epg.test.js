@@ -22,6 +22,9 @@ import {
   comparePlaybackToSchedule,
   normalizeXmltvSchedule,
   normalizeGracenoteSchedule,
+  xumoAssetUrl,
+  parseXumoAsset,
+  isLikelyFiller,
 } from "../../public/epg.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -606,6 +609,44 @@ describe("schedule normalizers", () => {
     );
     assert.equal(viaXmltv.status, "match");
     assert.equal(viaGn.status, "match");
+  });
+});
+
+describe("Xumo asset lookup / filler detection", () => {
+  test("builds the asset URL", () => {
+    assert.match(xumoAssetUrl("XM05M7E0PC09SI"), /\/v2\/assets\/asset\/XM05M7E0PC09SI\.json\?/);
+  });
+
+  test("parses a real asset response", () => {
+    // shape captured live 2026-08-28
+    const info = parseXumoAsset(
+      '{"id":"XM05M7E0PC09SI","title":"Forensic Files EN Ad Slate 2026 2 Minutes","contentType":"SHORT-FORM","runtime":120}'
+    );
+    assert.equal(info.title, "Forensic Files EN Ad Slate 2026 2 Minutes");
+    assert.equal(info.contentType, "SHORT-FORM");
+    assert.equal(info.runtimeS, 120);
+  });
+
+  test("returns null on unparseable json rather than throwing", () => {
+    assert.equal(parseXumoAsset("<html>nope</html>"), null);
+    assert.equal(parseXumoAsset(""), null);
+  });
+
+  test("SHORT-FORM is treated as filler — the case that makes 'unscheduled' routine", () => {
+    assert.equal(isLikelyFiller({ contentType: "SHORT-FORM", title: "Forensic Files EN Ad Slate" }), true);
+  });
+
+  test("EPISODIC is NOT filler — an unscheduled episode is a real finding", () => {
+    assert.equal(isLikelyFiller({ contentType: "EPISODIC", title: "Palm Saturday" }), false);
+  });
+
+  test("falls back to the title when contentType is absent", () => {
+    assert.equal(isLikelyFiller({ contentType: null, title: "Channel Bumper 15s" }), true);
+    assert.equal(isLikelyFiller({ contentType: null, title: "Palm Saturday" }), false);
+  });
+
+  test("a missing lookup is not filler — absence of evidence isn't evidence", () => {
+    assert.equal(isLikelyFiller(null), false);
   });
 });
 

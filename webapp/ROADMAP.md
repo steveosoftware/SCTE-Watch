@@ -220,6 +220,16 @@ The structural inference from the shell scripts was correct — `<schedule prgSv
 
 **Another parser gap found the same way**: XML comments were not stripped, so markup-shaped text inside a comment was matched as real markup. Fixed with `stripComments()` ahead of all matching, on both the XMLTV and Gracenote paths.
 
+### First live run — 2026-08-28
+
+Ran end to end against a real channel (`88893069`) and a real Gracenote schedule (`prgSvcId 157905`). Three things came out of it:
+
+**1. The Gracenote → Xumo asset mapping exists exactly as hoped.** Every one of the 103 events carries `<broadcast><id type="remoteId">XM…</id></broadcast>`, and that is the Xumo asset id — the same namespace as the `/content/{ASSET_ID}/` path in the `.ts` segment URLs. The join the whole feature depends on is real and direct.
+
+**2. `unscheduled` is usually not an alarm — it's an ad break.** The first live verdict was `UNSCHEDULED`, which initially looked like a mispaired channel. It wasn't: the playing asset `XM05M7E0PC09SI` resolves to *"Forensic Files EN Ad Slate 2026 2 Minutes"* (`SHORT-FORM`, 120s), while the schedule expected `XM0INFHT3SEGWZ` = *"Palm Saturday"* (`EPISODIC`, 1275s). **EPGs schedule programmes, not break filler**, so filler is legitimately absent from the schedule and the tool was reporting correctly — it just wasn't saying so usefully. The panel now resolves titles via Xumo's public asset endpoint (one lookup per asset change, cached, best-effort) and uses `contentType` to separate routine filler from a genuine finding.
+
+**3. Channel pairing still can't be auto-verified in Gracenote mode.** `/Sources?prgSvcId=157905` returns `<callSign>XRGFF</callSign>` plus `<URL>https://play.xumo.com/live-guide/forensic-files</URL>` and `countriesOfCoverage: CAN`. The callsign is the same one used in the XMLTV URL pattern `{xumoChannelId}_{callSign}.xml`, so it's a partial bridge — but nothing in either feed yields the Xumo *channel* id, so the pairing remains a user assertion. Worth revisiting if a channel-id ↔ prgSvcId mapping ever turns up.
+
 **Not built**: the opportunistic SCTE-35 program-boundary reconciliation (decision 2 above) — now largely moot, since asset ids answer the question directly without needing program boundaries at all.
 
 ---

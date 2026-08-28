@@ -26,6 +26,9 @@ import {
   comparePlaybackToSchedule,
   buildObservationCsv,
   gracenoteScheduleUrl,
+  xumoAssetUrl,
+  parseXumoAsset,
+  isLikelyFiller,
   addDays,
 } from "./epg.js";
 import { parseMaster } from "./scte35.js";
@@ -79,6 +82,22 @@ let mediaPlaylistUrl = null;
 let schedule = [];
 let scheduleLabel = "";
 let lastStatusKey = null;
+const assetInfoCache = new Map();
+
+// One lookup per distinct asset, not per poll. Best-effort: a failure here
+// must never sink the comparison, which is the actual job.
+async function describeAsset(assetId) {
+  if (!assetId) return null;
+  if (assetInfoCache.has(assetId)) return assetInfoCache.get(assetId);
+  let info = null;
+  try {
+    info = parseXumoAsset((await fetchViaProxy(xumoAssetUrl(assetId))).text);
+  } catch {
+    info = null;
+  }
+  assetInfoCache.set(assetId, info);
+  return info;
+}
 
 function appendLog(html) {
   outputEl.innerHTML += (outputEl.textContent ? "\n" : "") + html;
@@ -93,23 +112,31 @@ const STATUS_TEXT = {
   "no-schedule": "· schedule has no entry covering right now",
 };
 
-// "unscheduled" has two very different causes and they need telling apart.
-// Real drift almost always shows up as `wrong-asset` — the channel plays
-// something that IS on the schedule, just at the wrong moment. An asset
-// appearing nowhere in the schedule at all is far more often a mispaired
-// channel: the playback URL and the schedule id refer to different
-// channels. Nothing in either feed links the two id namespaces (Xumo
-// channel id vs Gracenote prgSvcId), so the tool cannot check the pairing
-// itself and has to say so rather than report confident nonsense.
+// "unscheduled" has three causes and they matter very differently. In
+// order of how often they actually occur:
+//
+//   1. Ad slate / filler in a break. EPGs schedule programmes, not break
+//      filler, so short-form content is legitimately absent. NOT drift.
+//      Detected via the asset's contentType (see isLikelyFiller).
+//   2. Genuine drift — an episode playing that the schedule never lists.
+//   3. A mispaired channel: the playback URL and the schedule id are
+//      different channels. Nothing links the Xumo channel id and Gracenote
+//      prgSvcId namespaces, so this can't be checked automatically.
+//
+// Real drift more usually surfaces as `wrong-asset` (playing something
+// that IS scheduled, at the wrong time), which is why `unscheduled` alone
+// shouldn't be presented as an alarm.
+const FILLER_NOTE = "short-form filler (ad slate/bumper) — EPGs don't schedule break filler, so this is expected in a break, not drift";
 const PAIRING_HINT =
-  "if this persists, check the channel pairing — an asset that appears nowhere " +
-  "in the schedule usually means the playback URL and the schedule are different channels";
+  "not filler and not on the schedule — either genuine drift, or the playback URL " +
+  "and the schedule id are different channels (nothing links those two id namespaces, so this can't be checked automatically)";
 
-function renderVerdict(result, nowMs) {
+function renderVerdict(result, nowMs, info) {
   const bad = result.status === "wrong-asset" || result.status === "unscheduled";
   verdictEl.className = "status " + (bad ? "warn" : "");
   const parts = [escapeHtml(STATUS_TEXT[result.status] ?? result.status)];
-  parts.push(`playing <strong>${escapeHtml(result.playingAssetId ?? "—")}</strong>`);
+  const playingLabel = info && info.title ? `${result.playingAssetId} — ${info.title}` : result.playingAssetId ?? "—";
+  parts.push(`playing <strong>${escapeHtml(playingLabel)}</strong>`);
   if (result.expected) {
     const title = result.expected.title ? ` (${escapeHtml(result.expected.title)})` : "";
     parts.push(`expected <strong>${escapeHtml(result.expected.assetId ?? "—")}</strong>${title}`);
@@ -120,7 +147,10 @@ function renderVerdict(result, nowMs) {
   }
   let html = parts.join(" &nbsp;·&nbsp; ") + ` &nbsp;·&nbsp; ${ts(nowMs)}Z`;
   if (result.status === "unscheduled") {
-    html += `<br><span class="note">${escapeHtml(PAIRING_HINT)}</span>`;
+    const filler = isLikelyFiller(info);
+    // Filler is routine, so it must not read as an alarm.
+    if (filler) verdictEl.className = "status";
+    html += `<br><span class="note">${escapeHtml(filler ? FILLER_NOTE : PAIRING_HINT)}</span>`;
   }
   verdictEl.innerHTML = html;
 }
@@ -167,8 +197,9 @@ async function poll() {
     const nowMs = Date.now();
     const playback = parseMediaPlaylistAssets(text, nowMs);
     const result = comparePlaybackToSchedule(playback, schedule, nowMs);
+    const info = await describeAsset(result.playingAssetId);
 
-    renderVerdict(result, nowMs);
+    renderVerdict(result, nowMs, info);
 
     // Log only when something changes — a monitor that reprints an
     // unchanged line every few seconds buries the events that matter.
@@ -193,7 +224,12 @@ async function poll() {
             `expected=${expected}${title}`
         )
       );
-      if (result.status === "unscheduled") appendLog(escapeHtml(`    ${PAIRING_HINT}`));
+      if (info && info.title) {
+        appendLog(escapeHtml(`    asset: ${info.title} (${info.contentType ?? "?"}${info.runtimeS ? ", " + info.runtimeS + "s" : ""})`));
+      }
+      if (result.status === "unscheduled") {
+        appendLog(escapeHtml(`    ${isLikelyFiller(info) ? FILLER_NOTE : PAIRING_HINT}`));
+      }
       if (result.drift) {
         appendLog(
           escapeHtml(

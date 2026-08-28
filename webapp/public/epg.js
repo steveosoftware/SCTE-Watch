@@ -357,6 +357,50 @@ export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
   };
 }
 
+// Xumo's public asset endpoint turns an opaque XM… id into something a
+// human can act on. Costs one request per *asset change* (not per poll),
+// and it's what distinguishes the two very different reasons an asset can
+// be missing from the schedule:
+//
+//   contentType EPISODIC   — a real programme. Missing from the schedule
+//                            means genuine drift, or a mispaired channel.
+//   contentType SHORT-FORM — an ad slate / filler / bumper. Routinely NOT
+//                            in the EPG at all, because the EPG schedules
+//                            programmes, not break filler. Expected during
+//                            an ad break, and not drift.
+//
+// Observed live: XM05M7E0PC09SI is "Forensic Files EN Ad Slate 2026 2
+// Minutes", SHORT-FORM, runtime 120 — sitting in a break on a channel
+// whose schedule only lists EPISODIC entries.
+export function xumoAssetUrl(assetId) {
+  const id = encodeURIComponent(String(assetId || ""));
+  return `https://valencia-app-mds.xumo.com/v2/assets/asset/${id}.json?f=title,contentType,runtime`;
+}
+
+export function parseXumoAsset(jsonText) {
+  let d;
+  try {
+    d = JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+  if (!d || typeof d !== "object") return null;
+  return {
+    id: d.id ?? null,
+    title: d.title ?? null,
+    contentType: d.contentType ?? null,
+    runtimeS: typeof d.runtime === "number" ? d.runtime : null,
+  };
+}
+
+// Filler is short-form by content type. The title check is a secondary
+// signal for feeds that don't set contentType.
+export function isLikelyFiller(asset) {
+  if (!asset) return false;
+  if ((asset.contentType || "").toUpperCase() === "SHORT-FORM") return true;
+  return /\b(ad slate|slate|bumper|filler|interstitial)\b/i.test(asset.title || "");
+}
+
 // ------------------------------------------- schedules, source-agnostic
 
 // Both schedule sources normalize to the same shape so everything
