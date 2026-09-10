@@ -377,23 +377,79 @@ export function extractTargetDuration(text) {
   return m ? parseInt(m[1], 10) : null;
 }
 
-// Compares two consecutive fetches of the same live HLS media playlist.
-// Per the HLS spec, EXT-X-MEDIA-SEQUENCE should advance by exactly the
-// number of segments that fell off the front of the list since the last
-// fetch — if it advanced by MORE than the segment count we actually saw,
-// the server skipped segments this poller never had a chance to see.
-// Returns null when there's nothing to report (no gap, or either fetch is
-// missing a sequence number to compare).
-export function detectSequenceGap(prevText, currText) {
-  const prevSeq = extractMediaSequence(prevText);
+// Compares two consecutive fetches of the same live HLS media playlist and
+// classifies how #EXT-X-MEDIA-SEQUENCE moved between them.
+//
+// Worth being clear WHY this needs two fetches: within any single playlist
+// the numbering is sequential by construction — MEDIA-SEQUENCE labels the
+// first segment and every later one is +1 from it, with no field able to
+// express a hole. (#EXT-X-DISCONTINUITY signals a timeline break, not a
+// numbering one, and #EXT-X-DISCONTINUITY-SEQUENCE is a separate counter.)
+// So a skip is only ever visible as a disagreement between two snapshots,
+// never inside one.
+//
+// Per the spec the sequence should advance by exactly the number of
+// segments that fell off the front since the last fetch. States:
+//
+//   "first"      — nothing to compare against yet.
+//   "unknown"    — one side has no MEDIA-SEQUENCE to read.
+//   "unchanged"  — advanced by 0. Normal when polling faster than the
+//                  segment duration; a stall only if it persists, which is
+//                  what isPlaylistStale() is for.
+//   "sequential" — advanced by 1..prevSegCount. Healthy: everything that
+//                  rolled off, we had already seen.
+//   "skipped"    — advanced by MORE than the previous list held, so
+//                  segments came and went between two polls and this
+//                  client never had a chance to see them. `missing` counts
+//                  them. Can mean an encoder outrunning us, a mid-stream
+//                  playlist swap, or simply a poll interval longer than
+//                  the window.
+//   "rewound"    — the sequence went BACKWARDS. Not a gap but a reset: a
+//                  packager restart, or a failover to an origin numbering
+//                  independently. Arguably worse than a skip, since every
+//                  timestamp and sequence a client has cached is now
+//                  meaningless, and it reads as "healthy" to anything that
+//                  only tests for a forward jump.
+export function compareMediaSequence(prevText, currText) {
   const currSeq = extractMediaSequence(currText);
-  if (prevSeq === null || currSeq === null) return null;
+  const prevSeq = prevText === null || prevText === undefined ? null : extractMediaSequence(prevText);
+  const segCount = countSegments(currText);
+
+  if (currSeq === null) return { state: "unknown", prevSeq, currSeq, advanced: null, segCount, missing: 0 };
+  if (prevSeq === null) {
+    const state = prevText === null || prevText === undefined ? "first" : "unknown";
+    return { state, prevSeq: null, currSeq, advanced: null, segCount, missing: 0 };
+  }
+
   const prevSegCount = countSegments(prevText);
   const advanced = currSeq - prevSeq;
-  if (advanced > prevSegCount) {
-    return { prevSeq, currSeq, advanced, prevSegCount, missing: advanced - prevSegCount };
-  }
-  return null;
+  let state;
+  if (advanced < 0) state = "rewound";
+  else if (advanced === 0) state = "unchanged";
+  else if (advanced <= prevSegCount) state = "sequential";
+  else state = "skipped";
+
+  return {
+    state,
+    prevSeq,
+    currSeq,
+    advanced,
+    prevSegCount,
+    segCount,
+    missing: state === "skipped" ? advanced - prevSegCount : 0,
+  };
+}
+
+// Narrow view of the above, kept because callers only wanting the alarm
+// case read better for it. Returns null unless segments were genuinely
+// skipped — note a "rewound" playlist is NOT a gap and returns null here,
+// which is exactly why compareMediaSequence exists alongside it.
+export function detectSequenceGap(prevText, currText) {
+  if (prevText === null || prevText === undefined) return null;
+  const r = compareMediaSequence(prevText, currText);
+  if (r.state !== "skipped") return null;
+  const { prevSeq, currSeq, advanced, prevSegCount, missing } = r;
+  return { prevSeq, currSeq, advanced, prevSegCount, missing };
 }
 
 // Returns the segment URI immediately following each #EXT-X-DISCONTINUITY

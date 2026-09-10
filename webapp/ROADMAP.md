@@ -352,6 +352,25 @@ Two things worth recording about the design:
 
 Verified: 304 unit + 23 e2e passing, plus a real-browser run of the rollover scenario confirming the green `match` verdict and the timing note render correctly.
 
+
+### Media sequence continuity — 2026-09-10
+
+Operator asked for media sequence as a visible data point while capturing playlists: sequential when healthy, obvious when it skips or jumps.
+
+**Why it can't be read off one playlist.** Inside a single playlist the numbering is sequential by construction — `#EXT-X-MEDIA-SEQUENCE` labels the first segment, every later one is +1, and there is no field capable of expressing a hole. (`#EXT-X-DISCONTINUITY` breaks the *timeline*, not the numbering, and `#EXT-X-DISCONTINUITY-SEQUENCE` is an unrelated counter with a confusingly similar name.) So continuity is only ever visible as a disagreement between two consecutive polls. The panel says as much next to the new line, because "why does this need a second poll" is the obvious first question.
+
+New `compareMediaSequence()` in `scte35.js` classifies the step between two fetches: `sequential` (advanced by no more than the previous window held — everything that rolled off, we saw), `skipped` (advanced past it, so segments came and went unobserved, with a count), `rewound`, `unchanged`, plus `first`/`unknown` for the cases with nothing to compare.
+
+**A backwards jump used to read as healthy.** The existing `detectSequenceGap()` tested only `advanced > prevSegCount`, so a sequence going *backwards* returned `null` — the same answer as a clean stream. That's a packager restart or a failover to an origin numbering independently, and it's arguably worse than a skip: every sequence number and timestamp a client has cached is instantly meaningless. It now has its own state. `detectSequenceGap()` survives as the narrow skip-only view and delegates to the new function, with a test pinning the fact that a rewind is deliberately *not* a gap by its contract.
+
+**Anomalies persist.** The line states the current step on every poll, and a skip or rewind also lands in a per-target tally that later clean polls don't erase — a clean poll after an anomaly reads amber, never green. An event you can only catch by staring at the right second isn't a monitor. Scoped per watched target, like the rest of the health state, since variants number themselves independently and a dropdown switch would otherwise manufacture a fake jump.
+
+**A bug this turned up.** `startHls()` fell back to a hardcoded `() => false` liveness predicate whenever the URL had no `#EXT-X-STREAM-INF` — i.e. whenever a media playlist was handed over directly rather than through a master. That fetched once and stopped, so a live playlist loaded that way sat frozen on a single snapshot and every across-polls check (sequence continuity, staleness, cue dedupe) had nothing to work with. It now uses the same `isLiveHlsPlaylist` test as a variant reached through a master. Found while building this — the sequence line simply never advanced. Regression-tested.
+
+Glossary gained `EXT-X-MEDIA-SEQUENCE`, `EXT-X-DISCONTINUITY` and `EXT-X-DISCONTINUITY-SEQUENCE`, the last two specifically because the two SEQUENCE tags are easy to mistake for one another.
+
+Verified: 314 unit + 26 e2e passing, plus a real-browser run stepping a stream through healthy → skip → rewind → healthy and confirming the colour and the persisting tally at each stage.
+
 ---
 
 ## Hygiene backlog

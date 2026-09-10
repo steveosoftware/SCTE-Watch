@@ -630,6 +630,131 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  test("sequence line: a live playlist reports its media sequence and advances sequentially", async () => {
+    const { page } = await newPage();
+    // The stream is served by a route that advances MEDIA-SEQUENCE by 2 on
+    // each fetch over a 5-segment window — i.e. healthy.
+    let n = 0;
+    const playlist = (seq) =>
+      ["#EXTM3U", "#EXT-X-TARGETDURATION:7", `#EXT-X-MEDIA-SEQUENCE:${seq}`]
+        .concat([0, 1, 2, 3, 4].map((i) => `#EXTINF:6.000,\nhttps://cdn.test/s${seq + i}.ts`))
+        .join("\n") + "\n";
+    await page.route("**/api/fetch**", (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ text: playlist(100 + 2 * n++), finalUrl: target, headers: {} }),
+      });
+    });
+
+    await page.goto(BASE_URL);
+    await page.fill("#manifest-interval", "1");
+    await page.evaluate(() =>
+      document.dispatchEvent(
+        new CustomEvent("tester:load", { detail: { url: "https://cdn.test/media.m3u8", format: "hls" } })
+      )
+    );
+
+    // Needs a SECOND poll before it can say anything about continuity —
+    // which is the whole point: a skip is invisible inside one playlist.
+    await page.waitForFunction(
+      () => /sequential/.test(document.getElementById("manifest-sequence")?.textContent || ""),
+      { timeout: 15000 }
+    );
+
+    const seq = await page.textContent("#manifest-sequence");
+    assert.match(seq, /\+2 sequential/);
+    assert.match(seq, /every segment accounted for/);
+    assert.ok(
+      await page.$eval("#manifest-sequence", (el) => el.classList.contains("ok")),
+      "a healthy advance should read as good, not merely unflagged"
+    );
+
+    await page.close();
+  });
+
+  test("sequence line: a skip is flagged and stays visible after a clean poll", async () => {
+    const { page } = await newPage();
+    // Healthy, healthy, then a jump far past the window, then healthy again.
+    const seqs = [100, 102, 104, 140, 142, 144, 146, 148];
+    let n = 0;
+    await page.route("**/api/fetch**", (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const seq = seqs[Math.min(n++, seqs.length - 1)];
+      const text =
+        ["#EXTM3U", "#EXT-X-TARGETDURATION:7", `#EXT-X-MEDIA-SEQUENCE:${seq}`]
+          .concat([0, 1, 2, 3, 4].map((i) => `#EXTINF:6.000,\nhttps://cdn.test/s${seq + i}.ts`))
+          .join("\n") + "\n";
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text, finalUrl: target, headers: {} }) });
+    });
+
+    await page.goto(BASE_URL);
+    await page.fill("#manifest-interval", "1");
+    await page.evaluate(() =>
+      document.dispatchEvent(
+        new CustomEvent("tester:load", { detail: { url: "https://cdn.test/media.m3u8", format: "hls" } })
+      )
+    );
+
+    await page.waitForFunction(
+      () => /JUMPED/.test(document.getElementById("manifest-sequence")?.textContent || ""),
+      { timeout: 15000 }
+    );
+    assert.ok(
+      await page.$eval("#manifest-sequence", (el) => el.classList.contains("bad")),
+      "a skip is a real finding, not a caution"
+    );
+
+    // The polls after it are clean, but the skip must not be erased by
+    // them — an anomaly you can only catch by staring at the right second
+    // is not much of a monitor.
+    await page.waitForFunction(
+      () => /sequential/.test(document.getElementById("manifest-sequence")?.textContent || ""),
+      { timeout: 15000 }
+    );
+    const after = await page.textContent("#manifest-sequence");
+    assert.match(after, /1 anomaly this session/);
+    assert.match(after, /skipped 31/); // 104→140 is +36 over a 5-segment window
+    assert.ok(
+      await page.$eval("#manifest-sequence", (el) => el.classList.contains("warn")),
+      "a clean poll after a skip is not an all-clear"
+    );
+
+    await page.close();
+  });
+
+  test("a media playlist loaded directly keeps polling instead of freezing on one snapshot", async () => {
+    const { page } = await newPage();
+    // Regression: this path used to pass a hardcoded `() => false` liveness
+    // predicate, so a live playlist handed over directly (rather than via a
+    // master) was fetched once and never again — leaving every
+    // across-polls check with nothing to compare.
+    let fetches = 0;
+    await page.route("**/api/fetch**", (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      fetches += 1;
+      const seq = 100 + fetches;
+      const text =
+        ["#EXTM3U", "#EXT-X-TARGETDURATION:7", `#EXT-X-MEDIA-SEQUENCE:${seq}`, "#EXTINF:6.000,", "https://cdn.test/a.ts"].join("\n") + "\n";
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text, finalUrl: target, headers: {} }) });
+    });
+
+    await page.goto(BASE_URL);
+    await page.fill("#manifest-interval", "1");
+    await page.evaluate(() =>
+      document.dispatchEvent(
+        new CustomEvent("tester:load", { detail: { url: "https://cdn.test/media.m3u8", format: "hls" } })
+      )
+    );
+
+    await page.waitForFunction(() => window.__f === undefined, { timeout: 100 }).catch(() => {});
+    await page.waitForTimeout(3500);
+    assert.ok(fetches >= 3, `expected repeated polls, got ${fetches} fetch(es)`);
+
+    await page.close();
+  });
+
   test("DRM signaling: multi-DRM ContentProtection is detected in the real UI", async () => {
     const { page } = await newPage();
     await page.goto(BASE_URL);

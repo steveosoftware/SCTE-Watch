@@ -17,6 +17,7 @@ import {
   extractMediaSequence,
   extractTargetDuration,
   detectSequenceGap,
+  compareMediaSequence,
   findDiscontinuities,
   isPlaylistStale,
   findVariantLadderAnomalies,
@@ -34,6 +35,7 @@ const statusEl = $("manifest-status");
 const healthEl = $("manifest-health");
 const drmEl = $("manifest-drm");
 const cdnEl = $("manifest-cdn");
+const sequenceEl = $("manifest-sequence");
 const outputEl = $("manifest-output");
 const scteStatusEl = $("manifest-scte-status");
 const scteOutputEl = $("manifest-scte-output");
@@ -162,6 +164,10 @@ function watch(url, stillLive) {
   clearPoll();
   let prevText = null;
   let lastHealthSeq = null;
+  // Scoped per target for the same reason as the rest of this state: after
+  // a dropdown switch the previous variant's sequence numbers say nothing
+  // about this one, and every variant numbers itself independently.
+  let sequenceAnomalies = [];
   let lastSeqChangeAtMs = null;
   let lastDrmFingerprint = null;
   let drmRotations = 0;
@@ -212,6 +218,70 @@ function watch(url, stillLive) {
     drmEl.textContent = drmRotations > 0 ? `${summary} · key changed ${drmRotations}x this session` : summary;
   }
 
+  // The sequence line answers a question the Health line can't: "is this
+  // advancing the way it should *right now*". Health reports exceptions, so
+  // silence there means either healthy or not-yet-checked; this states the
+  // current step explicitly on every poll, and keeps a running tally of
+  // anomalies so one that happened several polls ago doesn't scroll away
+  // into nothing.
+  function updateSequence(text) {
+    if (currentFormat !== "hls") {
+      sequenceEl.textContent = "";
+      sequenceEl.className = "status";
+      return;
+    }
+    const r = compareMediaSequence(prevText, text);
+    const at = new Date().toISOString().slice(11, 19);
+
+    if (r.state === "skipped") {
+      sequenceAnomalies.push(`${at} skipped ${r.missing} (${r.prevSeq}→${r.currSeq})`);
+    } else if (r.state === "rewound") {
+      sequenceAnomalies.push(`${at} went backwards (${r.prevSeq}→${r.currSeq})`);
+    }
+
+    let text_ = "";
+    let tone = "";
+    switch (r.state) {
+      case "first":
+        text_ = `at ${r.currSeq} · ${r.segCount} segments · watching for the next poll to compare`;
+        break;
+      case "unknown":
+        text_ = "no #EXT-X-MEDIA-SEQUENCE in this playlist — nothing to track";
+        break;
+      case "unchanged":
+        text_ = `at ${r.currSeq} · +0, playlist unchanged since the last poll`;
+        break;
+      case "sequential":
+        text_ = `at ${r.currSeq} · +${r.advanced} sequential — every segment accounted for`;
+        tone = "ok";
+        break;
+      case "skipped":
+        text_ =
+          `at ${r.currSeq} · JUMPED +${r.advanced} over a ${r.prevSegCount}-segment window — ` +
+          `${r.missing} segment(s) came and went unseen`;
+        tone = "bad";
+        break;
+      case "rewound":
+        text_ =
+          `at ${r.currSeq} · WENT BACKWARDS from ${r.prevSeq} — the numbering restarted ` +
+          `(packager restart or origin failover)`;
+        tone = "bad";
+        break;
+    }
+
+    if (sequenceAnomalies.length) {
+      const recent = sequenceAnomalies.slice(-3).join(", ");
+      text_ += ` · ${sequenceAnomalies.length} anomal${sequenceAnomalies.length === 1 ? "y" : "ies"} this session: ${recent}`;
+      // A clean poll after a bad one must not read as all-clear — the
+      // stream did skip, and that's the finding worth keeping in view.
+      if (!tone) tone = "warn";
+      if (tone === "ok") tone = "warn";
+    }
+
+    sequenceEl.textContent = text_;
+    sequenceEl.className = "status" + (tone ? " " + tone : "");
+  }
+
   function updateHealth(text) {
     if (currentFormat !== "hls") {
       healthEl.textContent = "";
@@ -252,6 +322,10 @@ function watch(url, stillLive) {
     try {
       const { text, headers } = await fetchViaProxy(url);
       render(text);
+      // Order matters: updateHealth() consumes prevText and then advances
+      // it to this poll's text, so anything else comparing against the
+      // previous fetch has to run first.
+      updateSequence(text);
       updateHealth(text); // runs every poll, even when text is unchanged — staleness detection depends on that
       updateDrm(text);
       updateCdnChain(headers);
@@ -308,8 +382,17 @@ async function startHls(url) {
       selectEl.value = "0";
       watchTarget(variants[0].url, isLiveHlsPlaylist);
     } else {
+      // No #EXT-X-STREAM-INF, so this URL is a media playlist handed to us
+      // directly rather than a master. It still gets the real liveness
+      // predicate: a live media playlist is exactly the thing worth
+      // polling, and #EXT-X-ENDLIST answers the question just as well here
+      // as it does for a variant reached through a master. This used to be
+      // a hardcoded `() => false`, which fetched once and stopped — so a
+      // directly-loaded live playlist showed a single frozen snapshot, and
+      // anything comparing consecutive polls (sequence continuity, cue
+      // dedupe, staleness) had nothing to work with.
       selectEl.value = "master";
-      watchTarget(url, () => false);
+      watchTarget(url, isLiveHlsPlaylist);
     }
   } catch (e) {
     statusEl.textContent = `Fetch error: ${e.message}`;
@@ -333,6 +416,8 @@ document.addEventListener("tester:load", (e) => {
   scteOutputEl.textContent = "";
   healthEl.textContent = "";
   healthEl.classList.remove("warn");
+  sequenceEl.textContent = "";
+  sequenceEl.className = "status";
   drmEl.textContent = "";
   cdnEl.textContent = "";
   cdnEl.classList.remove("warn");

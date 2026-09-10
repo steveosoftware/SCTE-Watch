@@ -100,6 +100,13 @@ export const GLOSSARY = {
   "EXT-X-DATERANGE": "The standard HLS tag for signaling a time range — most modern SCTE-35-in-HLS signaling rides on its SCTE35-OUT/SCTE35-IN/SCTE35-CMD attributes.",
   "EXT-X-ASSET": "Carries asset metadata (e.g. an ad break's ID) associated with a cue, used by some ad-insertion workflows.",
 
+  // Playlist bookkeeping. Both get read closely when diagnosing a live
+  // stream that skips or restarts, and the two SEQUENCE tags are easy to
+  // confuse for one another.
+  "EXT-X-MEDIA-SEQUENCE": "The sequence number of the FIRST segment in this playlist; every segment after it is numbered +1, so the numbering inside any single playlist is always unbroken. On a live stream it rises as older segments roll off the front — by exactly the number that dropped. Comparing it across two fetches is the only way to tell whether segments went past that you never saw.",
+  "EXT-X-DISCONTINUITY": "Marks a break in the media timeline — the next segment may change encoding parameters, timestamps, or both. Common at ad-insertion splices. It does NOT create a gap in segment numbering, which stays sequential across it.",
+  "EXT-X-DISCONTINUITY-SEQUENCE": "A count of the discontinuities that have already rolled off the front of a live playlist, letting a client keep its timeline aligned across the sliding window. A playlist-level counter — nothing to do with EXT-X-MEDIA-SEQUENCE, despite the similar name.",
+
   // HLS EXT-X-MEDIA — alternate renditions (alternate audio, sidecar
   // subtitles, embedded closed captions). Not SCTE-35-related, but the
   // most common thing people staring at a raw manifest need explained.

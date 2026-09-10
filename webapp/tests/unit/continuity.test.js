@@ -6,6 +6,7 @@ import {
   findVariantLadderAnomalies,
   extractTargetDuration,
   detectSequenceGap,
+  compareMediaSequence,
   findDiscontinuities,
   isPlaylistStale,
 } from "../../public/scte35.js";
@@ -95,6 +96,90 @@ describe("detectSequenceGap", () => {
 
   test("returns null when either playlist has no sequence number", () => {
     assert.equal(detectSequenceGap("#EXTM3U\n", playlist(100, 3)), null);
+  });
+});
+
+describe("compareMediaSequence", () => {
+  function playlist(seq, segCount) {
+    const lines = ["#EXTM3U", `#EXT-X-MEDIA-SEQUENCE:${seq}`];
+    for (let i = 0; i < segCount; i++) lines.push("#EXTINF:6.000,", `seg${seq + i}.ts`);
+    return lines.join("\n");
+  }
+
+  test("advancing by no more than the previous window is sequential", () => {
+    // prev held 100-104; now at 102, so 100 and 101 rolled off — both of
+    // which we had already seen. Nothing went past unobserved.
+    const r = compareMediaSequence(playlist(100, 5), playlist(102, 5));
+    assert.equal(r.state, "sequential");
+    assert.equal(r.advanced, 2);
+    assert.equal(r.missing, 0);
+  });
+
+  test("advancing by exactly the window size is still sequential, not a skip", () => {
+    // The boundary case: everything we held rolled off, but we saw it all.
+    const r = compareMediaSequence(playlist(100, 5), playlist(105, 5));
+    assert.equal(r.state, "sequential");
+    assert.equal(r.advanced, 5);
+  });
+
+  test("advancing past the window means segments came and went unseen", () => {
+    const r = compareMediaSequence(playlist(100, 5), playlist(110, 5));
+    assert.equal(r.state, "skipped");
+    assert.equal(r.missing, 5);
+    assert.equal(r.prevSeq, 100);
+    assert.equal(r.currSeq, 110);
+  });
+
+  test("a sequence going BACKWARDS is reported as a rewind", () => {
+    // A packager restart or a failover to an origin numbering
+    // independently. Every cached timestamp and sequence is now
+    // meaningless, so it must not read as healthy.
+    const r = compareMediaSequence(playlist(110, 5), playlist(100, 5));
+    assert.equal(r.state, "rewound");
+    assert.equal(r.advanced, -10);
+    assert.equal(r.missing, 0, "a rewind is a reset, not a count of lost segments");
+  });
+
+  test("an unmoved sequence is 'unchanged', which is normal between fast polls", () => {
+    const r = compareMediaSequence(playlist(100, 5), playlist(100, 5));
+    assert.equal(r.state, "unchanged");
+    assert.equal(r.advanced, 0);
+  });
+
+  test("the first poll has nothing to compare against and says so", () => {
+    const r = compareMediaSequence(null, playlist(100, 5));
+    assert.equal(r.state, "first");
+    assert.equal(r.currSeq, 100);
+    assert.equal(r.segCount, 5);
+  });
+
+  test("a playlist with no MEDIA-SEQUENCE is 'unknown', not silently zero", () => {
+    assert.equal(compareMediaSequence(playlist(100, 5), "#EXTM3U\n").state, "unknown");
+    assert.equal(compareMediaSequence("#EXTM3U\n", playlist(100, 5)).state, "unknown");
+  });
+
+  test("reports the current segment count alongside the verdict", () => {
+    assert.equal(compareMediaSequence(playlist(100, 5), playlist(102, 7)).segCount, 7);
+  });
+});
+
+describe("detectSequenceGap delegates to compareMediaSequence", () => {
+  function playlist(seq, segCount) {
+    const lines = ["#EXTM3U", `#EXT-X-MEDIA-SEQUENCE:${seq}`];
+    for (let i = 0; i < segCount; i++) lines.push("#EXTINF:6.000,", `seg${seq + i}.ts`);
+    return lines.join("\n");
+  }
+
+  test("a rewind is NOT a gap — which is exactly why the richer view exists", () => {
+    // Guards the narrow contract deliberately: callers of this function
+    // want the skip alarm only. Anything wanting the full picture must
+    // call compareMediaSequence, and this test is the reminder.
+    assert.equal(detectSequenceGap(playlist(110, 5), playlist(100, 5)), null);
+    assert.equal(compareMediaSequence(playlist(110, 5), playlist(100, 5)).state, "rewound");
+  });
+
+  test("a null previous playlist is not a gap", () => {
+    assert.equal(detectSequenceGap(null, playlist(100, 5)), null);
   });
 });
 
