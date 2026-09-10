@@ -280,6 +280,80 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  // Regression, end to end. The asset id is read off the live edge, which is
+  // content the packager encoded some seconds ago, while the schedule was
+  // being asked about "now". For the length of that latency after a
+  // programme boundary the live edge still legitimately carries the OUTGOING
+  // programme — and comparing the two instants reported `wrong-asset`, the
+  // alarm verdict, on a channel behaving perfectly, once per boundary.
+  test("EPG drift: a rollover inside the packager latency is a match, not an alarm", async () => {
+    const { page } = await newPage();
+    const now = Date.now();
+    const LATENCY_MS = 20000;
+    const boundary = now - 5000; // the schedule rolled over 5s ago
+    const OUTGOING = "XMOUTGOING0001";
+    const INCOMING = "XMINCOMING0001";
+
+    // The live edge ends 20s behind now and is still on the outgoing
+    // programme. One playlist-level PDT is enough to say so.
+    const segCount = 3;
+    const windowStart = now - LATENCY_MS - segCount * 6000;
+    const seg = (n) => `https://live-content.xumo.com/3845/content/${OUTGOING}/1/6_${n}.ts`;
+    const playlist =
+      `#EXTM3U\n#EXT-X-TARGETDURATION:7\n#EXT-X-MEDIA-SEQUENCE:9000\n` +
+      `#EXT-X-PROGRAM-DATE-TIME:${new Date(windowStart).toISOString()}\n` +
+      [1, 2, 3].map((n) => `#EXTINF:6.000,\n${seg(n)}`).join("\n") + "\n";
+
+    const xmltv = `<?xml version="1.0"?><tv date="x">
+      <channel id="88884008"><display-name>Test Channel</display-name></channel>
+      <programme start="${xmltvStamp(boundary - 1800000)}" stop="${xmltvStamp(boundary)}" channel="88884008">
+        <title>Outgoing</title><tms-id>MV000000000000</tms-id><programme-id>${OUTGOING}</programme-id>
+      </programme>
+      <programme start="${xmltvStamp(boundary)}" stop="${xmltvStamp(boundary + 1800000)}" channel="88884008">
+        <title>Incoming</title><tms-id>MV000000000001</tms-id><programme-id>${INCOMING}</programme-id>
+      </programme>
+    </tv>`;
+
+    await page.route("**/api/fetch**", async (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const reply = (text) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ text, finalUrl: target, headers: {} }),
+        });
+      if (target.includes("xmltv")) return reply(xmltv);
+      if (target.includes(".m3u8")) return reply(playlist);
+      return route.continue();
+    });
+
+    await page.goto(BASE_URL);
+    await page.check('input[name="epg-source"][value="xmltv"]');
+    await page.fill("#epg-playback-url", "https://example.test/channel/media.m3u8");
+    await page.fill("#epg-xmltv-url", "https://example.test/epg/xmltv/88884008_TEST.xml");
+    await page.click("#epg-run");
+    await page.waitForFunction(
+      () => (document.getElementById("epg-verdict")?.textContent || "").length > 0,
+      { timeout: 15000 }
+    );
+    await page.click("#epg-stop");
+
+    const verdict = await page.textContent("#epg-verdict");
+    assert.match(verdict, /correct asset playing/, "a correct channel must not alarm at a rollover");
+    assert.match(verdict, new RegExp(OUTGOING));
+    assert.equal(
+      await page.$$eval("#epg-output .line-bad", (els) => els.length),
+      0,
+      "nothing here is a real finding"
+    );
+    assert.match(
+      await page.textContent("#epg-output"),
+      /anchored on this stream's own PROGRAM-DATE-TIME/,
+      "the run should say how it timed the stream"
+    );
+    await page.close();
+  });
+
   test("EPG drift: a transition is reported ONCE, not re-reported every poll", async () => {
     const { page } = await newPage();
     const now = Date.now();

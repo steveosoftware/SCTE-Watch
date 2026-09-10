@@ -186,12 +186,42 @@
     &ldquo;now&rdquo; at the live edge: a single check gives a yes/no, and watching across polls catches the
     asset transition and turns it into a drift figure.
   </p>
+
+  <h4>How it works out the time</h4>
   <p>
-    The timeline is interpolated backwards from that live edge — the last segment&rsquo;s end anchored at
-    now, then <code>#EXTINF</code> durations accumulated backwards — which puts times within about
-    <strong>±1 segment</strong>, so a figure like <code>+503s</code> is not second-accurate. Note this is
-    how it works <em>whether or not</em> the stream carries a PDT: the panel doesn&rsquo;t read one yet.
-    Where a stream does publish PDT, anchoring on it would be exact rather than estimated.
+    Two ways, and the log says which one you got. It prefers the stream&rsquo;s own
+    <code>#EXT-X-PROGRAM-DATE-TIME</code>: that is the packager stating a segment&rsquo;s actual wall-clock
+    time, so there is nothing to infer. <strong>One tag anchors the whole playlist</strong> — it formally
+    timestamps only the segment after it, and every other segment is reached by accumulating
+    <code>#EXTINF</code> durations from there. On a live channel the packager rewrites that tag as the
+    window slides, so each poll gets a fresh anchor rather than a decaying one.
+  </p>
+  <p>
+    With no usable PDT it falls back on the one thing every live playlist gives us: the last segment
+    <em>is</em> the live edge. That end is anchored at now and durations accumulated backwards. This is an
+    estimate, and a biased one rather than merely fuzzy — a packager finishes encoding a segment before
+    publishing it, usually holds a few back, and the playlist then crosses a CDN, so the live edge really
+    is some tens of seconds behind now and every time derived from it is shifted late by that same amount.
+  </p>
+  <p>
+    What neither method escapes is resolution: an asset change is only ever located to
+    <strong>±1 segment</strong>, because that is the finest grain the playlist describes. So a PDT-anchored
+    <code>+503s</code> is accurate to the segment it was seen in; a live-edge one carries the packager
+    latency on top of that.
+  </p>
+  <p>
+    A <code>#EXT-X-DISCONTINUITY</code> is where accumulating gets dangerous — the timeline can jump, so
+    durations either side of one do not compose. A PDT after the discontinuity re-anchors and all is well,
+    which is the normal case, since that is exactly what the tag is for. Without one there is a hole in the
+    timeline, and the panel falls back to live-edge anchoring for the whole playlist rather than timing
+    part of the window and leaving the rest blank.
+  </p>
+  <p>
+    This is also what keeps a correct channel from being called wrong at a programme boundary. The asset id
+    comes off the live edge, which is content encoded some seconds ago; the schedule is asked about the
+    instant the live edge actually represents, not about now. Those are different moments, and for the
+    length of the packager latency after a rollover the live edge still legitimately carries the outgoing
+    programme while the schedule has already moved on.
   </p>
 
   <h4>When a new line appears in the log</h4>

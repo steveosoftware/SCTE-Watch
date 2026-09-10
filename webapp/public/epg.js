@@ -294,32 +294,53 @@ export function extractAssetId(segmentUrl) {
   return aid ? aid[1] : null;
 }
 
-// Walks an HLS media playlist and returns its segments with an estimated
-// wall-clock time for each.
+// Walks an HLS media playlist and returns its segments with a wall-clock
+// time for each, plus how that time was arrived at (`timingSource`).
 //
-// This deliberately does NOT use #EXT-X-PROGRAM-DATE-TIME, and the
-// distinction matters: plenty of streams publish PDT (playlist-level or
-// per-segment) and plenty don't — the Xumo linear channels this was built
-// against are bare (VERSION, TARGETDURATION, MEDIA-SEQUENCE, EXTINF,
-// segment URLs, nothing else) — so relying on it would work on some
-// channels and silently fail on others.
+// Two anchors are possible, and which one we get changes how much the
+// numbers downstream can be trusted:
 //
-// What every live playlist does give us is that its last segment is, by
-// definition, the live edge — approximately "now". So the timeline is
-// anchored at the end and interpolated backwards by accumulating #EXTINF
-// durations. That's an estimate, not ground truth: it inherits any
-// packager latency between a segment being produced and appearing in the
-// playlist. Good enough to time a transition to within a segment
-// duration, which is the resolution the schedule itself is meaningful at.
+//   "pdt"       — #EXT-X-PROGRAM-DATE-TIME. The packager stating a
+//                 segment's actual wall-clock time. Ground truth. One tag
+//                 is enough: it formally timestamps only the segment that
+//                 follows it, and every other segment is reached by
+//                 accumulating #EXTINF durations from there. On a live
+//                 channel the packager rewrites it as the window slides,
+//                 so each poll gets a fresh anchor rather than a decaying
+//                 one.
+//   "live-edge" — no usable PDT. Falls back on the one thing every live
+//                 playlist gives us: its last segment IS the live edge, so
+//                 anchor that at `now` and interpolate backwards.
 //
-// Worth improving: where a PDT IS present it's an exact anchor, and
-// preferring it (falling back to the live edge otherwise) would make the
-// drift figure exact on those streams. scte35.js's findCueWallclocks()
-// already does exactly this for cue timing.
+// The fallback is an ESTIMATE, and biased rather than merely fuzzy. A
+// packager has to finish encoding a segment before publishing it, usually
+// holds a few back, and the playlist then travels a CDN — so the live edge
+// is genuinely tens of seconds behind `now`, and every timestamp derived
+// from it is shifted late by that same amount. PDT removes that bias
+// entirely. What neither anchor removes is resolution: an asset change is
+// only ever located to within one segment, because that's the finest grain
+// the playlist describes.
+//
+// Discontinuities are where accumulating gets dangerous: #EXT-X-DISCONTINUITY
+// means the timeline can jump, so durations either side of one don't compose.
+// A PDT after the discontinuity re-anchors and all is well (the spec says
+// there SHOULD be one, and an ad break — exactly what this panel watches —
+// is where they show up). Without one there's a hole, and rather than
+// timing part of the window and leaving the rest null, we fall back to
+// live-edge anchoring for the whole playlist: a uniformly approximate
+// timeline beats a partly-null one, and it's the behaviour these streams
+// already had.
+//
+// Same shape as scte35.js's findCueWallclocks(), which prefers an
+// authoritative START-DATE and interpolates only when there isn't one.
 export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
   const lines = String(text || "").split(/\r?\n/);
   const segments = [];
   let pendingDuration = null;
+  // PDT applies to the NEXT segment; a discontinuity invalidates whatever
+  // anchor we were carrying, since durations no longer compose across it.
+  let anchorMs = null;
+  let elapsedSinceAnchorS = 0;
 
   // #EXT-X-MEDIA-SEQUENCE numbers the first segment in the window, and
   // every segment after it increments. That gives each segment — and so
@@ -336,23 +357,52 @@ export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
       pendingDuration = parseFloat(inf[1]);
       continue;
     }
+    const pdt = /^#EXT-X-PROGRAM-DATE-TIME:(.+)$/.exec(line);
+    if (pdt) {
+      const t = Date.parse(pdt[1].trim());
+      if (!Number.isNaN(t)) {
+        anchorMs = t;
+        elapsedSinceAnchorS = 0;
+      }
+      continue;
+    }
+    if (/^#EXT-X-DISCONTINUITY(\s|$|:)/.test(line)) {
+      anchorMs = null;
+      continue;
+    }
     if (line.startsWith("#")) continue;
+    const durationS = pendingDuration ?? 0;
     segments.push({
       url: line,
-      durationS: pendingDuration ?? 0,
+      durationS,
       assetId: extractAssetId(line),
       sequence: mediaSequence === null ? null : mediaSequence + segments.length,
+      pdtStartMs: anchorMs === null ? null : anchorMs + elapsedSinceAnchorS * 1000,
     });
+    if (anchorMs !== null) elapsedSinceAnchorS += durationS;
     pendingDuration = null;
   }
 
-  // Anchor the last segment's END at now, then walk backwards.
-  let cursor = nowMs;
-  for (let i = segments.length - 1; i >= 0; i--) {
-    segments[i].endMs = cursor;
-    segments[i].startMs = cursor - segments[i].durationS * 1000;
-    cursor = segments[i].startMs;
+  // Only trust PDT if it timed the WHOLE window — see the discontinuity
+  // note above. A partly-timed timeline falls back rather than mixing bases.
+  const timingSource =
+    segments.length > 0 && segments.every((s) => s.pdtStartMs !== null) ? "pdt" : "live-edge";
+
+  if (timingSource === "pdt") {
+    for (const s of segments) {
+      s.startMs = s.pdtStartMs;
+      s.endMs = s.pdtStartMs + s.durationS * 1000;
+    }
+  } else {
+    // Anchor the last segment's END at now, then walk backwards.
+    let cursor = nowMs;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      segments[i].endMs = cursor;
+      segments[i].startMs = cursor - segments[i].durationS * 1000;
+      cursor = segments[i].startMs;
+    }
   }
+  for (const s of segments) delete s.pdtStartMs;
 
   // Asset changes visible inside this one window.
   const transitions = [];
@@ -376,6 +426,13 @@ export function parseMediaPlaylistAssets(text, nowMs = Date.now()) {
     segments,
     mediaSequence,
     liveEdgeAssetId: last ? last.assetId : null,
+    // The instant on the CONTENT timeline that the live edge represents.
+    // Under live-edge anchoring this is `now` by construction; under PDT
+    // it's the real thing, which is what lets a caller ask the schedule
+    // about the moment the stream is actually showing rather than about
+    // `now`. Null only when there are no segments to speak of.
+    liveEdgeMs: last ? last.endMs : null,
+    timingSource,
     transitions,
     windowSeconds: segments.reduce((a, s) => a + s.durationS, 0),
   };
@@ -473,9 +530,23 @@ export function findScheduledAt(schedule, tMs) {
 //   "unscheduled"    — playing an asset the schedule doesn't cover at all
 //   "no-asset-id"    — couldn't read an asset id from the segments
 //   "no-schedule"    — schedule has no entry for this instant
+//
+// Both sides are read at the SAME instant, which is subtler than it looks.
+// The asset id comes off the live edge, and the live edge is content the
+// packager encoded some seconds ago — so asking the schedule what should
+// air *now* compares two different moments. Mid-programme that's harmless,
+// but across a programme boundary it isn't: for the length of the packager
+// latency the live edge still legitimately carries the outgoing programme
+// while the schedule has already rolled to the next one, and comparing
+// them reported `wrong-asset` — the alarm verdict — on a channel doing
+// exactly the right thing. So the lookup uses the live edge's own media
+// time. Where that came from PDT this is now exact; where it fell back to
+// live-edge anchoring `liveEdgeMs` IS `nowMs`, so those streams behave
+// precisely as they did before.
 export function comparePlaybackToSchedule(playback, schedule, nowMs = Date.now()) {
   const playingAssetId = playback.liveEdgeAssetId;
-  const expected = findScheduledAt(schedule, nowMs);
+  const atMs = playback.liveEdgeMs ?? nowMs;
+  const expected = findScheduledAt(schedule, atMs);
 
   let status;
   if (!playingAssetId) status = "no-asset-id";
@@ -488,10 +559,12 @@ export function comparePlaybackToSchedule(playback, schedule, nowMs = Date.now()
     status = elsewhere ? "wrong-asset" : "unscheduled";
   }
 
-  // If the playing asset IS scheduled, how far off is its start? Uses the
-  // observed transition when this poll happened to capture one (accurate to
-  // roughly a segment), otherwise falls back to comparing against the start
-  // of whatever the schedule expected.
+  // If the playing asset IS scheduled, how far off is its start? Needs a
+  // transition this poll actually captured inside the window — so most
+  // polls report no figure at all, and the verdict above is the continuous
+  // signal. `timing` says how far the number can be trusted: "pdt" is
+  // accurate to the segment it was observed in, "live-edge" carries the
+  // packager-latency bias on top of that.
   let drift = null;
   const scheduledForPlaying = playingAssetId
     ? schedule.find((p) => normalizeId(p.assetId) === normalizeId(playingAssetId))
@@ -505,10 +578,19 @@ export function comparePlaybackToSchedule(playback, schedule, nowMs = Date.now()
       scheduledStartMs: scheduledForPlaying.startMs,
       seconds: Math.round((observedStart.atMs - scheduledForPlaying.startMs) / 1000),
       basis: "observed-transition",
+      timing: playback.timingSource ?? "live-edge",
     };
   }
 
-  return { status, playingAssetId, expected, scheduledForPlaying, drift };
+  return {
+    status,
+    playingAssetId,
+    expected,
+    scheduledForPlaying,
+    drift,
+    comparedAtMs: atMs,
+    timingSource: playback.timingSource ?? "live-edge",
+  };
 }
 
 // ------------------------------------------------------------- comparison
@@ -729,8 +811,22 @@ function toCsv(rows) {
 // changed something, so a session can be handed to someone else as
 // evidence rather than screenshotted.
 export function buildObservationCsv(observations) {
+  // `timing` travels with the row on purpose: a drift figure means quite
+  // different things depending on how the stream's timeline was anchored,
+  // and a spreadsheet that has lost that distinction invites comparing a
+  // PDT-exact number against a live-edge estimate as though they were the
+  // same measurement.
   const rows = [
-    ["observed_utc", "status", "playing_asset_id", "expected_asset_id", "expected_title", "drift_seconds", "note"],
+    [
+      "observed_utc",
+      "status",
+      "playing_asset_id",
+      "expected_asset_id",
+      "expected_title",
+      "drift_seconds",
+      "timing",
+      "note",
+    ],
   ];
   for (const o of observations) {
     rows.push([
@@ -740,6 +836,7 @@ export function buildObservationCsv(observations) {
       o.expected ? o.expected.assetId : "",
       o.expected ? o.expected.title : "",
       o.drift ? o.drift.seconds : "",
+      o.timingSource || (o.drift ? o.drift.timing : "") || "",
       o.note || "",
     ]);
   }

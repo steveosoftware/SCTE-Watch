@@ -1,0 +1,24 @@
+## Synthetic. Same discontinuity as hls-media-pdt-discontinuity.m3u8, but the
+## packager does the right thing and emits a fresh #EXT-X-PROGRAM-DATE-TIME
+## immediately after it, re-anchoring the timeline.
+##
+## Note the second PDT is NOT what accumulating across the discontinuity
+## would have predicted (13:59:36Z) — the splice drops 4 seconds. That gap is
+## exactly why durations can't be composed across a discontinuity, and a test
+## reading 13:59:40Z off the second asset proves the re-anchor is honoured
+## rather than the arithmetic.
+#EXTM3U
+#EXT-X-TARGETDURATION:7
+#EXT-X-VERSION:3
+#EXT-X-MEDIA-SEQUENCE:661500
+#EXT-X-PROGRAM-DATE-TIME:2026-09-10T13:59:24.000Z
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_300.ts
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_301.ts
+#EXT-X-DISCONTINUITY
+#EXT-X-PROGRAM-DATE-TIME:2026-09-10T13:59:40.000Z
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_020.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_021.ts

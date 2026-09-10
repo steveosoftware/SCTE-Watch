@@ -1,0 +1,23 @@
+## Synthetic. A PDT at the top, then an #EXT-X-DISCONTINUITY with NO PDT
+## after it to re-anchor — the case the HLS spec says SHOULD NOT happen but
+## which real packagers produce anyway, typically at an ad-break splice.
+##
+## Durations don't compose across a discontinuity, so the segments after it
+## cannot be timed by accumulating from the opening tag. The window is
+## therefore only partly timeable, and parseMediaPlaylistAssets falls back to
+## live-edge anchoring for ALL of it rather than returning a half-null
+## timeline.
+#EXTM3U
+#EXT-X-TARGETDURATION:7
+#EXT-X-VERSION:3
+#EXT-X-MEDIA-SEQUENCE:661400
+#EXT-X-PROGRAM-DATE-TIME:2026-09-10T13:59:24.000Z
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_200.ts
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_201.ts
+#EXT-X-DISCONTINUITY
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_010.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_011.ts

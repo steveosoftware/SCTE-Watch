@@ -170,6 +170,10 @@ let schedule = [];
 let scheduleLabel = "";
 let printedSchedule = [];
 let lastStatusKey = null;
+// Announced once per run, and again if it ever changes mid-run — a stream
+// that starts publishing PDT (or stops) changes how much every timestamp
+// below it can be trusted, so it shouldn't pass silently.
+let lastTimingSource = null;
 const assetInfoCache = new Map();
 
 // Transitions seen so far this session, keyed by the media-sequence number
@@ -177,13 +181,18 @@ const assetInfoCache = new Map();
 //
 // Two problems this solves. First, a transition stays visible for as long
 // as it's inside the playlist window (~60s), so re-reading it every poll
-// re-reports the same event several times. Second, its wall-clock time is
-// an ESTIMATE interpolated backwards from the live edge, and it shifts by
-// up to a segment duration between polls as the window slides — so the
-// same event appeared at 13:08:17, then :22, then :20. The sequence number
-// doesn't move, so it's the identity; and the FIRST sighting is the most
-// accurate estimate (fewest segments between the transition and the anchor
-// at the live edge), so first write wins.
+// re-reports the same event several times. Second, on a stream with no PDT
+// its wall-clock time is an ESTIMATE interpolated backwards from the live
+// edge, and it shifts by up to a segment duration between polls as the
+// window slides — so the same event appeared at 13:08:17, then :22, then
+// :20. The sequence number doesn't move, so it's the identity; and the
+// FIRST sighting is the most accurate estimate (fewest segments between the
+// transition and the anchor at the live edge), so first write wins.
+//
+// A PDT-anchored stream doesn't wobble — the time comes off the packager's
+// own tag and is identical on every poll — but keying on the sequence
+// number is still what stops the event being re-reported, so both paths
+// want exactly this.
 const seenTransitions = new Map();
 const MAX_SEEN_TRANSITIONS = 500;
 
@@ -233,6 +242,27 @@ const STATUS_TEXT = {
 // that IS scheduled, at the wrong time), which is why `unscheduled` alone
 // shouldn't be presented as an alarm.
 const FILLER_NOTE = "short-form filler (ad slate/bumper) — EPGs don't schedule break filler, so this is expected in a break, not drift";
+
+// How the stream's own timeline was anchored, which sets how much the drift
+// figure can be trusted. Both are ±1 segment, since that's the finest grain
+// the playlist describes; only the live-edge fallback adds a systematic bias
+// on top, because it has to assume the live edge is "now" when in truth the
+// packager is some seconds behind.
+const TIMING_NOTE = {
+  pdt: "±1 segment; read from PROGRAM-DATE-TIME",
+  "live-edge": "±1 segment, plus packager latency — estimated from the live edge, no PROGRAM-DATE-TIME to read",
+};
+
+// Said once at the top of a run, so the operator knows which of the two
+// they're getting before they read any number below it.
+const TIMING_SOURCE_NOTE = {
+  pdt:
+    "anchored on this stream's own PROGRAM-DATE-TIME, so the schedule is checked against " +
+    "the moment the live edge actually represents",
+  "live-edge":
+    "no usable PROGRAM-DATE-TIME in this stream — times are estimated by treating the live edge as now, " +
+    "which runs late by however far the packager is behind",
+};
 const PAIRING_HINT =
   "not filler and not on the schedule — either genuine drift, or the playback URL " +
   "and the schedule id are different channels (nothing links those two id namespaces, so this can't be checked automatically)";
@@ -366,6 +396,11 @@ async function poll() {
 
     renderVerdict(result, nowMs, info);
 
+    if (playback.timingSource !== lastTimingSource) {
+      lastTimingSource = playback.timingSource;
+      appendLog(escapeHtml(`    timing: ${TIMING_SOURCE_NOTE[playback.timingSource] ?? playback.timingSource}`), "line-muted");
+    }
+
     // Log only when something changes — a monitor that reprints an
     // unchanged line every few seconds buries the events that matter.
     const key = `${result.status}|${result.playingAssetId}|${result.expected?.assetId ?? ""}`;
@@ -377,6 +412,7 @@ async function poll() {
         playingAssetId: result.playingAssetId,
         expected: result.expected,
         drift: result.drift,
+        timingSource: result.timingSource,
         note: scheduleLabel,
       });
       downloadBtn.disabled = false;
@@ -403,9 +439,10 @@ async function poll() {
       if (result.drift) {
         appendLog(
           escapeHtml(
-            `    started ~${ts(result.drift.observedStartMs)}, scheduled ${ts(result.drift.scheduledStartMs)}` +
+            `    started ${result.drift.timing === "pdt" ? "" : "~"}${ts(result.drift.observedStartMs)},` +
+              ` scheduled ${ts(result.drift.scheduledStartMs)}` +
               ` → ${result.drift.seconds > 0 ? "+" : ""}${result.drift.seconds}s` +
-              ` (±1 segment; estimated from the live edge, not read from PROGRAM-DATE-TIME)`
+              ` (${TIMING_NOTE[result.drift.timing] ?? TIMING_NOTE["live-edge"]})`
           ),
           "line-muted"
         );
@@ -415,7 +452,13 @@ async function poll() {
     // Only newly-seen transitions, so an event is reported once.
     for (const t of freshTransitions) {
       const at = t.atSequence !== null && t.atSequence !== undefined ? ` (segment #${t.atSequence})` : "";
-      appendLog(escapeHtml(`    asset transition: ${t.fromAssetId} → ${t.toAssetId} at ~${ts(t.atMs)}${at}`), "line-muted");
+      // "~" only where the time really is an estimate — a PDT-anchored
+      // stream is being read, not guessed at.
+      const approx = playback.timingSource === "pdt" ? "" : "~";
+      appendLog(
+        escapeHtml(`    asset transition: ${t.fromAssetId} → ${t.toAssetId} at ${approx}${ts(t.atMs)}${at}`),
+        "line-muted"
+      );
     }
 
     statusEl.textContent = `Watching · ${observations.length} event(s) logged`;
@@ -443,6 +486,7 @@ runBtn.addEventListener("click", async () => {
   statusEl.classList.remove("warn");
   observations = [];
   lastStatusKey = null;
+  lastTimingSource = null;
   seenTransitions.clear();
   downloadBtn.disabled = true;
   printedSchedule = [];

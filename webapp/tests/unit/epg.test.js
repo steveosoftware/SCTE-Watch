@@ -16,6 +16,7 @@ import {
   gracenoteScheduleUrl,
   buildComparisonCsv,
   buildScheduleCsv,
+  buildObservationCsv,
   formatScheduleListing,
   formatUtc,
   formatDuration,
@@ -541,6 +542,111 @@ describe("parseMediaPlaylistAssets", () => {
     assert.equal(r.segments.length, 0);
     assert.equal(r.liveEdgeAssetId, null);
   });
+
+  test("no PDT anywhere → live-edge anchoring, and it says so", () => {
+    const r = parseMediaPlaylistAssets(playlist, NOW);
+    assert.equal(r.timingSource, "live-edge");
+    // Under the fallback the live edge IS now, by construction.
+    assert.equal(r.liveEdgeMs, NOW);
+  });
+});
+
+describe("parseMediaPlaylistAssets — PROGRAM-DATE-TIME anchoring", () => {
+  const pdt = fx("hls-media-pdt-transition.m3u8");
+  const broken = fx("hls-media-pdt-discontinuity.m3u8");
+  const rearmed = fx("hls-media-pdt-rearmed.m3u8");
+  // Deliberately far from the fixture's own timeline: the packager is
+  // running ~66s behind this "now". Any test that still passes is reading
+  // the tag, not the live edge.
+  const NOW = Date.UTC(2026, 8, 10, 14, 1, 0);
+  const FIRST = Date.UTC(2026, 8, 10, 13, 59, 24);
+
+  test("a single playlist-level PDT times the whole window", () => {
+    const r = parseMediaPlaylistAssets(pdt, NOW);
+    assert.equal(r.timingSource, "pdt");
+    assert.equal(r.segments[0].startMs, FIRST);
+    // ...and every later segment accumulates #EXTINF from that one tag.
+    r.segments.forEach((s, i) => assert.equal(s.startMs, FIRST + i * 6000, `segment ${i}`));
+  });
+
+  test("the timeline ignores nowMs entirely when a PDT anchors it", () => {
+    const a = parseMediaPlaylistAssets(pdt, NOW);
+    const b = parseMediaPlaylistAssets(pdt, NOW + 3600000);
+    assert.deepEqual(
+      a.segments.map((s) => s.startMs),
+      b.segments.map((s) => s.startMs),
+      "an hour later must not move a timeline read from the packager's own tag"
+    );
+  });
+
+  test("the live edge is placed where the packager says, not at now", () => {
+    const r = parseMediaPlaylistAssets(pdt, NOW);
+    // 5 segments x 6s from 13:59:24 → the window ends at 13:59:54.
+    assert.equal(r.liveEdgeMs, Date.UTC(2026, 8, 10, 13, 59, 54));
+    assert.ok(r.liveEdgeMs < NOW, "the live edge is behind now — that's the packager latency");
+  });
+
+  test("a transition gets an exact time rather than a live-edge estimate", () => {
+    const r = parseMediaPlaylistAssets(pdt, NOW);
+    assert.equal(r.transitions.length, 1);
+    // The 3rd segment (index 2) starts the new asset: 13:59:24 + 12s.
+    assert.equal(r.transitions[0].atMs, Date.UTC(2026, 8, 10, 13, 59, 36));
+    assert.equal(r.transitions[0].atSequence, 661302);
+  });
+
+  test("a discontinuity with no PDT after it falls back for the WHOLE window", () => {
+    // Durations don't compose across the splice, so the tail can't be timed
+    // from the opening tag. A uniformly approximate timeline beats a
+    // half-null one.
+    const r = parseMediaPlaylistAssets(broken, NOW);
+    assert.equal(r.timingSource, "live-edge");
+    assert.equal(r.liveEdgeMs, NOW);
+    assert.ok(
+      r.segments.every((s) => typeof s.startMs === "number"),
+      "no segment may be left without a time"
+    );
+  });
+
+  test("a PDT after the discontinuity re-anchors, and beats the arithmetic", () => {
+    const r = parseMediaPlaylistAssets(rearmed, NOW);
+    assert.equal(r.timingSource, "pdt");
+    assert.equal(r.segments[0].startMs, FIRST);
+    // Accumulating across the splice would predict 13:59:36; the packager
+    // says 13:59:40. The tag wins — that 4s gap is the whole reason
+    // durations can't be composed across a discontinuity.
+    assert.equal(r.segments[2].startMs, Date.UTC(2026, 8, 10, 13, 59, 40));
+  });
+
+  test("an unparseable PDT is ignored rather than poisoning the timeline", () => {
+    const junk = pdt.replace(/#EXT-X-PROGRAM-DATE-TIME:.*/, "#EXT-X-PROGRAM-DATE-TIME:not-a-date");
+    const r = parseMediaPlaylistAssets(junk, NOW);
+    assert.equal(r.timingSource, "live-edge");
+    assert.ok(
+      r.segments.every((s) => !Number.isNaN(s.startMs)),
+      "a bad tag must not produce NaN timestamps"
+    );
+  });
+
+  test("#EXT-X-DISCONTINUITY-SEQUENCE is a counter, not a splice — it must not break the anchor", () => {
+    // Easy to match by accident with a loose prefix test. It's a
+    // playlist-level counter that appears in the header of plenty of
+    // healthy live playlists; treating it as a discontinuity would drop
+    // every such stream back to live-edge estimation for no reason.
+    const withCounter = pdt.replace(
+      "#EXT-X-MEDIA-SEQUENCE:661300",
+      "#EXT-X-MEDIA-SEQUENCE:661300\n#EXT-X-DISCONTINUITY-SEQUENCE:12"
+    );
+    const r = parseMediaPlaylistAssets(withCounter, NOW);
+    assert.equal(r.timingSource, "pdt");
+    assert.equal(r.segments[0].startMs, FIRST);
+  });
+
+  test("segments never leak the internal pdtStartMs scratch field", () => {
+    for (const t of [pdt, broken]) {
+      const r = parseMediaPlaylistAssets(t, NOW);
+      assert.ok(!("pdtStartMs" in r.segments[0]), "internal field must not reach callers");
+    }
+  });
 });
 
 describe("findScheduledAt", () => {
@@ -614,6 +720,65 @@ describe("comparePlaybackToSchedule", () => {
 
   test("asset id comparison ignores case", () => {
     assert.equal(comparePlaybackToSchedule(playing("xmnow"), schedule, NOW).status, "match");
+  });
+
+  // Regression. The asset id is read off the live edge, which is content the
+  // packager encoded some seconds ago; the schedule was being asked about
+  // `now`. Those are different instants, and for the length of the packager
+  // latency after a programme boundary the live edge still legitimately
+  // carries the OUTGOING programme while the schedule has already rolled
+  // over. Comparing the two reported `wrong-asset` — the alarm verdict — on
+  // a channel behaving perfectly, once per boundary, forever.
+  describe("a programme boundary inside the packager latency", () => {
+    const BOUNDARY = Date.UTC(2026, 8, 10, 14, 0, 0);
+    const LATENCY_MS = 20000;
+    const rollover = [
+      { startMs: BOUNDARY - 1800000, stopMs: BOUNDARY, assetId: "XMOUTGOING", title: "Outgoing" },
+      { startMs: BOUNDARY, stopMs: BOUNDARY + 1800000, assetId: "XMINCOMING", title: "Incoming" },
+    ];
+    // 5s past the rollover: the schedule says Incoming, but the packager is
+    // 20s behind so the live edge is still honestly showing Outgoing.
+    const now = BOUNDARY + 5000;
+    const atLiveEdge = {
+      liveEdgeAssetId: "XMOUTGOING",
+      liveEdgeMs: now - LATENCY_MS,
+      timingSource: "pdt",
+      transitions: [],
+    };
+
+    test("is a match, because both sides are read at the live edge's own time", () => {
+      const r = comparePlaybackToSchedule(atLiveEdge, rollover, now);
+      assert.equal(r.status, "match", "a correct channel must not report wrong-asset at a rollover");
+      assert.equal(r.expected.title, "Outgoing");
+      assert.equal(r.comparedAtMs, now - LATENCY_MS);
+    });
+
+    test("still reports wrong-asset when the channel really is wrong", () => {
+      // Same instant, same latency — but genuinely playing neither programme.
+      const r = comparePlaybackToSchedule({ ...atLiveEdge, liveEdgeAssetId: "XMINCOMING" }, rollover, now);
+      assert.equal(r.status, "wrong-asset", "the fix must not blunt a real finding");
+    });
+
+    test("rolls over for real once the live edge crosses the boundary", () => {
+      const later = { ...atLiveEdge, liveEdgeAssetId: "XMINCOMING", liveEdgeMs: BOUNDARY + 1000 };
+      assert.equal(comparePlaybackToSchedule(later, rollover, BOUNDARY + 21000).status, "match");
+    });
+
+    test("a stream with no PDT falls back to now, exactly as it always did", () => {
+      // liveEdgeMs === nowMs under live-edge anchoring, so these streams keep
+      // their existing behaviour — including this false positive, which needs
+      // an anchor the stream doesn't publish.
+      const noPdt = { liveEdgeAssetId: "XMOUTGOING", liveEdgeMs: now, timingSource: "live-edge", transitions: [] };
+      assert.equal(comparePlaybackToSchedule(noPdt, rollover, now).status, "wrong-asset");
+    });
+  });
+
+  test("a playback object with no timing fields still compares against now", () => {
+    // `playing()` omits liveEdgeMs/timingSource entirely — the older shape.
+    const r = comparePlaybackToSchedule(playing("XMNOW"), schedule, NOW);
+    assert.equal(r.status, "match");
+    assert.equal(r.comparedAtMs, NOW);
+    assert.equal(r.timingSource, "live-edge");
   });
 });
 
@@ -956,5 +1121,57 @@ describe("buildScheduleCsv", () => {
 
   test("an empty schedule still produces a valid header-only CSV", () => {
     assert.equal(buildScheduleCsv([]).trim().split("\n").length, 1);
+  });
+});
+
+describe("buildObservationCsv", () => {
+  const AT = Date.UTC(2026, 8, 10, 14, 0, 0);
+  const rows = (csv) => csv.trim().split("\n");
+
+  const obs = [
+    {
+      atMs: AT,
+      status: "match",
+      playingAssetId: "XMPLAYING01",
+      expected: { assetId: "XMPLAYING01", title: "Some Programme" },
+      drift: { seconds: -3, timing: "pdt" },
+      timingSource: "pdt",
+      note: "Gracenote · 157905",
+    },
+  ];
+
+  test("headers include the timing basis alongside the drift figure", () => {
+    const [header] = rows(buildObservationCsv(obs));
+    assert.equal(
+      header,
+      "observed_utc,status,playing_asset_id,expected_asset_id,expected_title,drift_seconds,timing,note"
+    );
+  });
+
+  test("a row carries the timing basis, so a drift number is never read bare", () => {
+    // A PDT-exact -3s and a live-edge-estimated -3s are not the same
+    // measurement, and a spreadsheet that dropped the distinction would
+    // invite treating them as one.
+    const [, row] = rows(buildObservationCsv(obs));
+    assert.match(row, /^2026-09-10T14:00:00\.000Z,match,XMPLAYING01,XMPLAYING01,Some Programme,-3,pdt,/);
+  });
+
+  test("falls back to the drift's own timing when the row lacks one", () => {
+    const legacy = [{ ...obs[0], timingSource: undefined }];
+    assert.match(rows(buildObservationCsv(legacy))[1], /,-3,pdt,/);
+  });
+
+  test("an observation with no drift leaves both columns empty rather than guessing", () => {
+    const noDrift = [{ ...obs[0], drift: null, timingSource: "live-edge" }];
+    assert.match(rows(buildObservationCsv(noDrift))[1], /,,live-edge,/);
+  });
+
+  test("quotes a title containing a comma", () => {
+    const comma = [{ ...obs[0], expected: { assetId: "X", title: "Lock, Stock" } }];
+    assert.match(rows(buildObservationCsv(comma))[1], /"Lock, Stock"/);
+  });
+
+  test("no observations yields a header and nothing else", () => {
+    assert.equal(rows(buildObservationCsv([])).length, 1);
   });
 });

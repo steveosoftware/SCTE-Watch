@@ -19,7 +19,7 @@ Update this alongside `CONTEXT.md` as items land.
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
 5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
-6. ~~**EPG drift detection.**~~ **Done** (2026-08-26; comparison basis reworked 2026-08-27 to check the *stream* rather than a second schedule; verified against production 2026-08-28). Credential question resolved — the REST `api_key` API is the approach, FTP is a separate pipeline and out of scope. Serialization verified against a live response. **One open item**: channel pairing can't be auto-verified in Gracenote mode. See its own section below.
+6. ~~**EPG drift detection.**~~ **Done** (2026-08-26; comparison basis reworked 2026-08-27 to check the *stream* rather than a second schedule; verified against production 2026-08-28). Credential question resolved — the REST `api_key` API is the approach, FTP is a separate pipeline and out of scope. Serialization verified against a live response. PDT anchoring landed 2026-09-10, fixing a boundary false alarm along with it. **One open item**: channel pairing can't be auto-verified in Gracenote mode. See its own section below.
 
 ---
 
@@ -320,6 +320,8 @@ Two things were wrong, one cosmetic and one not:
 
 **Open improvement, not done here**: `parseMediaPlaylistAssets()` could prefer a real PDT when present and fall back to live-edge interpolation otherwise, which would make the drift figure exact rather than ±1 segment on streams that publish one. `scte35.js`'s `findCueWallclocks()` already follows exactly that pattern for cue timing (authoritative `START-DATE` when present, interpolated otherwise), so there's a precedent in the codebase to copy. The estimate stays honest in the meantime because it now says how it was derived.
 
+**Done 2026-09-10** — and it turned out to be hiding a defect rather than just an imprecision. See below.
+
 ### Colour-coded verdicts — 2026-08-28
 
 Operator asked for the obvious thing: a `match` line should read as green and a mismatch as red, rather than every log line being the same grey.
@@ -327,6 +329,28 @@ Operator asked for the obvious thing: a `match` line should read as green and a 
 Both the verdict banner and its log entry now take their tone from one `toneFor()` rule, so the two can't disagree about how serious something is. Green for `match`; red for a real finding — `wrong-asset`, or `unscheduled` on content that isn't break filler. Deliberately *not* red: filler in an ad break (routine, and the panel has argued since the first live run that it shouldn't read as an alarm) and `no-asset-id`/`no-schedule`, which are the tool not knowing rather than the channel being wrong. Amber keeps its existing meaning — the tool itself had trouble.
 
 Two constraints worth recording. Colour is never the only signal: every state still names itself in words, since red/green is exactly the pair a colour-blind viewer can't distinguish. And the log tints are inline spans rather than full-width bands, because making them block-level would strip the real newlines out of the `<pre>`'s text content — which would silently weaken the transition-dedupe e2e test that reads that element line by line.
+
+
+### PDT anchoring, and the boundary false alarm it was hiding — 2026-09-10
+
+Picked up the open improvement above. Investigating it first turned up a real defect, so this landed as a bug fix with an accuracy improvement attached rather than the other way round.
+
+**The defect.** [`comparePlaybackToSchedule()`] read the playing asset from the live edge and asked the schedule about `now`. Those are two different instants: the live edge is content the packager finished encoding some seconds ago, held back a little, and shipped through a CDN. Mid-programme the gap is invisible — same asset either way. At a programme boundary it is not. For the length of the packager latency after a rollover, the live edge still legitimately carries the OUTGOING programme while the schedule has already moved to the next one, and comparing them yields `wrong-asset` — the red alarm verdict — on a channel doing exactly the right thing. Once per boundary, on every channel, forever.
+
+Reproduced before fixing: a 20s-latency channel 5s past a rollover, playing precisely what it should be, reported `wrong-asset`. The two regression tests pinning it fail against the old code in both directions — the correct channel must read `match`, and a genuinely wrong one must still read `wrong-asset`, so the fix can't have been "always say match".
+
+**The fix.** `parseMediaPlaylistAssets()` now exposes `liveEdgeMs`, the instant on the content timeline that the live edge represents, and the schedule lookup uses that instead of `now`. Both sides are finally read at the same point on the timeline.
+
+**The anchoring.** `timingSource` is `"pdt"` when the stream publishes a usable `#EXT-X-PROGRAM-DATE-TIME` and `"live-edge"` otherwise. A single tag anchors the whole window — PDT formally timestamps only the segment following it, and the rest accumulate `#EXTINF` from there; on a live channel the packager rewrites it as the window slides, so each poll gets a fresh anchor rather than a decaying one. Same shape as `findCueWallclocks()`, as the note above predicted.
+
+Two things worth recording about the design:
+
+- **Discontinuities break accumulation.** Durations don't compose across an `#EXT-X-DISCONTINUITY`, and an ad break — exactly what this panel watches — is where they appear. A PDT after the discontinuity re-anchors (the spec says there SHOULD be one). Without one, the **whole** playlist falls back to live-edge anchoring rather than timing part of the window and leaving the rest null: a uniformly approximate timeline is more useful than a partly-null one, and it's the behaviour these streams already had. A fixture pins the re-anchor case with a deliberate 4s gap at the splice, so a test reading the tag can't be confused with one doing the arithmetic.
+- **Streams with no PDT are bit-for-bit unchanged.** `liveEdgeMs === nowMs` under the fallback, so the operator's own Xumo channels — which publish no PDT at all — behave exactly as before, *including* the boundary false positive, which can't be fixed without an anchor the stream doesn't provide. That's stated in a test rather than left implicit.
+
+**Honesty about the numbers.** The docs previously called the accuracy "roughly a segment duration", which conflated two errors. Resolution is ±1 segment and no anchor escapes it — that's the finest grain a playlist describes. Anchor bias is the fallback assuming the live edge is `now`, which shifts every timestamp late by the packager latency and is probably the larger of the two. PDT removes the second entirely and the first not at all. The log now names which anchor a run is using, the drift line qualifies itself accordingly, and the drift CSV carries a `timing` column so a PDT-exact figure can't be read alongside a live-edge estimate as though they were the same measurement.
+
+Verified: 304 unit + 23 e2e passing, plus a real-browser run of the rollover scenario confirming the green `match` verdict and the timing note render correctly.
 
 ---
 

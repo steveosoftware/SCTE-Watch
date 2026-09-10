@@ -1,0 +1,24 @@
+## Synthetic. Same asset transition as hls-media-asset-transition.m3u8, but
+## the packager publishes a single playlist-level #EXT-X-PROGRAM-DATE-TIME.
+## One tag is enough to anchor the whole window: it formally timestamps the
+## segment that follows it, and every later segment is reached by
+## accumulating #EXTINF from there.
+##
+## The PDT deliberately does NOT agree with any plausible "now" — the window
+## ends at 13:59:54Z, so a test passing a later nowMs proves the timeline is
+## read from the tag rather than from the live edge.
+#EXTM3U
+#EXT-X-TARGETDURATION:7
+#EXT-X-VERSION:3
+#EXT-X-MEDIA-SEQUENCE:661300
+#EXT-X-PROGRAM-DATE-TIME:2026-09-10T13:59:24.000Z
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_100.ts
+#EXTINF:6.000,
+https://live-content.xumo.com/3845/content/XM08RIB78GYPVR/28846714/6_101.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_001.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_002.ts
+#EXTINF:6.000,
+https://live-content-cf.xumo.com/149/content/XM05M7E0PC09SI/28980908/6_003.ts
