@@ -207,6 +207,23 @@ Any recognized SCTE-35/HLS term in decoded output (splice command names, segment
 
 **Deployed** on AWS Amplify (2026-08-18). `webapp/public/` is served as static Amplify Hosting output (build spec: `baseDirectory: webapp/public`, no build step). `/api/fetch` and `/api/dns-chain` run as an AWS Lambda (`scte-watch-api`, `us-east-1`) behind an API Gateway HTTP API, reached through an Amplify rewrite rule (`/api/<*>` → the API Gateway URL, status 200) so the client's same-origin `fetch("/api/...")` calls work unchanged — no CORS, no code path difference between local dev and deployed. See ROADMAP.md Phase 3 for the exact resources and their ARNs/IDs.
 
+**Three things deploy three different ways, and only one of them is `git push`:**
+
+| what | how |
+|---|---|
+| `webapp/public/` (the site) | `git push` → Amplify builds automatically |
+| Lambda `scte-watch-api` | `aws lambda update-function-code` with a zip. **Not connected to git.** |
+| API Gateway routes | AWS CLI, one-off — only when adding a *new* route |
+
+Amplify has no view of the Lambda; it holds only the rewrite rule pointing `/api/<*>` at the API Gateway URL. There is nothing to redeploy from the Amplify console.
+
+**PENDING as of 2026-09-11 — the deployed Lambda is behind the repo.** `/api/segment-scan` exists in `lambda/handler.js` here but not in production. Two operations are needed, and both have a trap:
+
+1. **The zip must now include `public/tsanalyze.js`.** The deployed zip is `ssrf-guard.js`, `api-handlers.js`, `cdn-chain.js`, `package.json` (`{"type":"module"}`, which is what makes Node 20 read the `.js` files as ESM), and `lambda/handler.js`. `api-handlers.js` now also imports `./public/tsanalyze.js`, so that path has to be in the archive. Ship the old five-file list and the function throws `ERR_MODULE_NOT_FOUND` on cold start — taking `/api/fetch` and `/api/dns-chain` down with it, since they share the module. That reads as "the whole API is down", not "the new endpoint is missing".
+2. **`GET /api/segment-scan` must be added as an API Gateway route.** The HTTP API forwards only routes it knows; today that is `GET /api/fetch` and `GET /api/dns-chain`. Without it the gateway 404s before the Lambda is ever reached.
+
+**Not urgent, deliberately.** The segment scan fetches segments *directly from the browser*, so it already works on the live site. This only buys the CORS fallback for origins that refuse cross-origin reads. Verify all three endpoints against the live URL after any redeploy — including the two that already work.
+
 ## Known/verified behavior
 
 - **`pts_adjustment` bug — fixed** (2026-08-16). Was documented but never applied; now added to every absolute PTS, never to `break_duration` (a relative span). Regression-tested.
