@@ -9,7 +9,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { handleFetchRequest, handleDnsChainRequest } from "./api-handlers.js";
+import { handleFetchRequest, handleDnsChainRequest, handleSegmentScanRequest } from "./api-handlers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -34,6 +34,11 @@ function sendJson(res, status, obj) {
 
 async function handleFetch(req, res, urlObj) {
   const { status, body } = await handleFetchRequest(urlObj.searchParams.get("url"));
+  sendJson(res, status, body);
+}
+
+async function handleSegmentScan(req, res, urlObj) {
+  const { status, body } = await handleSegmentScanRequest(urlObj.searchParams.get("url"));
   sendJson(res, status, body);
 }
 
@@ -68,6 +73,7 @@ const server = http.createServer((req, res) => {
     return res.end("bad request");
   }
   if (urlObj.pathname === "/api/fetch" && req.method === "GET") return handleFetch(req, res, urlObj);
+  if (urlObj.pathname === "/api/segment-scan" && req.method === "GET") return handleSegmentScan(req, res, urlObj);
   if (urlObj.pathname === "/api/dns-chain" && req.method === "GET") return handleDnsChain(req, res, urlObj);
   return serveStatic(req, res, urlObj.pathname);
 });

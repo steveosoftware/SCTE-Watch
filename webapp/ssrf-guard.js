@@ -115,10 +115,10 @@ export async function fetchWithGuardedRedirects(startUrl, { userAgent, timeoutMs
   throw new ProxyBlockedError("too many redirects");
 }
 
-// Reads a response body as text, aborting once maxBytes is exceeded rather
+// Reads a response body as bytes, aborting once maxBytes is exceeded rather
 // than buffering an unbounded (or maliciously huge) response in memory.
-export async function readTextCapped(response, maxBytes) {
-  if (!response.body) return response.text();
+export async function readBytesCapped(response, maxBytes) {
+  if (!response.body) return Buffer.from(await response.arrayBuffer());
   const reader = response.body.getReader();
   const chunks = [];
   let total = 0;
@@ -130,7 +130,16 @@ export async function readTextCapped(response, maxBytes) {
       await reader.cancel();
       throw new Error(`response exceeded ${maxBytes} byte limit`);
     }
-    chunks.push(value);
+    chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+// Reads a response body as text. Shares readBytesCapped's streaming path so
+// the cap is enforced in one place, but keeps its own no-body fallback:
+// a response without a readable stream is read with .text() as it always
+// has been, rather than being routed through .arrayBuffer().
+export async function readTextCapped(response, maxBytes) {
+  if (!response.body) return response.text();
+  return (await readBytesCapped(response, maxBytes)).toString("utf8");
 }

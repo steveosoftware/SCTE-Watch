@@ -755,6 +755,65 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  // A log that yanks you to the newest line on every poll is unusable for
+  // reading anything older. Follow the tail only while the reader is
+  // already AT the tail; otherwise hold their position.
+  test("log boxes hold the reader's scroll position instead of jumping to the newest line", async () => {
+    const { page } = await newPage();
+    let n = 0;
+    // A live playlist with a long window, advancing one segment per poll,
+    // so both boxes overflow and keep changing.
+    await page.route("**/api/fetch**", (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const seq = 900 + n++;
+      const text =
+        ["#EXTM3U", "#EXT-X-TARGETDURATION:7", `#EXT-X-MEDIA-SEQUENCE:${seq}`]
+          .concat([...Array(20).keys()].map((i) => `#EXTINF:6.000,\nhttps://cdn.test/s${seq + i}.ts`))
+          .join("\n") + "\n";
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text, finalUrl: target, headers: {} }) });
+    });
+
+    await page.goto(BASE_URL);
+    await page.fill("#manifest-interval", "1");
+    await page.evaluate(() =>
+      document.dispatchEvent(new CustomEvent("tester:load", { detail: { url: "https://cdn.test/media.m3u8", format: "hls" } }))
+    );
+
+    // Wait until both boxes actually overflow, or the assertions below
+    // would pass vacuously on a box with nothing to scroll.
+    await page.waitForFunction(
+      () =>
+        ["manifest-output", "manifest-scte-output"].every((id) => {
+          const el = document.getElementById(id);
+          return el && el.scrollHeight > el.clientHeight + 4;
+        }),
+      { timeout: 20000 }
+    );
+
+    for (const id of ["manifest-output", "manifest-scte-output"]) {
+      // Park in the middle — the realistic "reading back through it" spot.
+      const target = await page.$eval(id === "manifest-output" ? "#manifest-output" : "#manifest-scte-output", (el) => {
+        const t = Math.floor((el.scrollHeight - el.clientHeight) / 2);
+        el.scrollTop = t;
+        return el.scrollTop;
+      });
+      const before = await page.$eval(`#${id}`, (el) => el.scrollTop);
+      await page.waitForTimeout(3500); // several polls
+      const after = await page.$eval(`#${id}`, (el) => el.scrollTop);
+      assert.equal(after, before, `${id} must not move the reader (parked at ${target})`);
+
+      // Returning to the bottom re-arms following, with no mode to toggle.
+      await page.$eval(`#${id}`, (el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await page.waitForTimeout(3500);
+      const pinned = await page.$eval(`#${id}`, (el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 4);
+      assert.ok(pinned, `${id} must resume following once scrolled back to the bottom`);
+    }
+
+    await page.close();
+  });
+
   test("DRM signaling: multi-DRM ContentProtection is detected in the real UI", async () => {
     const { page } = await newPage();
     await page.goto(BASE_URL);

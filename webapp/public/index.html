@@ -69,6 +69,15 @@
       <span id="manifest-sequence" class="status"></span>
       <span class="note">Numbering is always sequential <em>within</em> one playlist, so a skip can only show up between two polls.</span>
     </div>
+    <div class="row">
+      <label><span class="glossary-term" data-term="continuity counter">Segment bytes</span></label>
+      <button id="ts-scan-btn" class="secondary" disabled>Scan segments</button>
+      <label for="ts-scan-count" class="inline">Segments</label>
+      <input id="ts-scan-count" type="number" min="2" max="6" step="1" value="3">
+      <span id="ts-scan-status" class="status"></span>
+      <span class="note">Downloads real segments (megabytes) — on demand only, never while polling.</span>
+    </div>
+    <pre id="ts-scan-output" class="log small" hidden></pre>
     <pre id="manifest-output" class="log"></pre>
     <div class="row">
       <label>SCTE-35 cues</label>

@@ -4,7 +4,7 @@
 // just the Lambda-shaped transport wrapper, the same role server.js plays
 // for local dev via node:http.
 
-import { handleFetchRequest, handleDnsChainRequest } from "../api-handlers.js";
+import { handleFetchRequest, handleDnsChainRequest, handleSegmentScanRequest } from "../api-handlers.js";
 
 function json(status, body) {
   return {
@@ -20,6 +20,12 @@ export const handler = async (event) => {
 
   if (path.endsWith("/api/fetch")) {
     const { status, body } = await handleFetchRequest(qs.url);
+    return json(status, body);
+  }
+  // Note this one moves megabytes per invocation, unlike the others — the
+  // client only falls back to it when CORS blocks a direct segment fetch.
+  if (path.endsWith("/api/segment-scan")) {
+    const { status, body } = await handleSegmentScanRequest(qs.url);
     return json(status, body);
   }
   if (path.endsWith("/api/dns-chain")) {

@@ -10,7 +10,9 @@ Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (
 
 **As of 2026-08-28 `staging` and `roadmap` are identical** (`df52d77`) — staging was 21 commits behind and fast-forwarded, no divergence, nothing lost. Working tree clean and fully pushed. `main` is untouched and still a single commit; nothing deploys from it.
 
-Latest work on `roadmap` (2026-09-10): the EPG panel now anchors on `#EXT-X-PROGRAM-DATE-TIME` when the stream publishes one, which also fixed a false `wrong-asset` alarm at every programme boundary; and the Manifest Inspector gained a **Sequence** status line tracking `#EXT-X-MEDIA-SEQUENCE` continuity across polls, which turned up two further defects (a backwards jump reading as healthy, and a directly-loaded media playlist never polling twice). See the panel sections and ROADMAP.md's dated entries.
+Latest work on `roadmap` (2026-09-11): a segment byte scan in the Manifest Inspector (real TS packets — continuity counters, TEI, PMT/in-band-SCTE-35 detection, fetched client-side to avoid Lambda egress), and log boxes that no longer steal your scroll position mid-read.
+
+Before that (2026-09-10): the EPG panel now anchors on `#EXT-X-PROGRAM-DATE-TIME` when the stream publishes one, which also fixed a false `wrong-asset` alarm at every programme boundary; and the Manifest Inspector gained a **Sequence** status line tracking `#EXT-X-MEDIA-SEQUENCE` continuity across polls, which turned up two further defects (a backwards jump reading as healthy, and a directly-loaded media playlist never polling twice). See the panel sections and ROADMAP.md's dated entries.
 
 The 2026-08-28 push (second session that day) added, all in the EPG panel unless noted: schedule printing (**Print schedule** + schedule CSV), the panel moved above VAST/VMAP, the Gracenote key remembered in `localStorage` behind an opt-out, a **How it works** explainer modal (new reusable `explainer-ui.js`), a widened Stream URL input in the tester panel, corrected PROGRAM-DATE-TIME wording, and green/red colour-coded verdicts. Each has its own dated entry in ROADMAP.md with the reasoning.
 
@@ -64,11 +66,11 @@ Running the app itself still needs no `npm install` — `server.js` uses only No
 **Running the tests DOES need `npm install`** (adds Playwright as a devDependency, for the e2e suite only — the app's own runtime dependency count is still zero). Then:
 
 ```bash
-npm test            # unit tests (fast, no browser, no network) — 314 passing
-npm run test:e2e     # e2e — needs `npx playwright install chromium` once first — 26 passing
+npm test            # unit tests (fast, no browser, no network) — 341 passing
+npm run test:e2e     # e2e — needs `npx playwright install chromium` once first — 27 passing
 ```
 
-Counts are as of 2026-09-10. The e2e suite's last three tests hit real public streams and can fail on a CDN outage without anything being wrong here — see ROADMAP.md Phase 0.
+Counts are as of 2026-09-11. The e2e suite's last three tests hit real public streams and can fail on a CDN outage without anything being wrong here — see ROADMAP.md Phase 0.
 
 See ROADMAP.md Phase 0 for what each suite covers.
 
@@ -78,9 +80,9 @@ See ROADMAP.md Phase 0 for what each suite covers.
 scte35watch.py           original CLI script (predates the web app; not touched — fate undecided, see ROADMAP.md)
 webapp/
   server.js              static file server + thin node:http wrapper around api-handlers.js (local dev only — not what's deployed)
-  api-handlers.js         pure request logic for /api/fetch and /api/dns-chain — {status, body} in, no transport awareness. Shared by server.js (local) and lambda/handler.js (deployed)
+  api-handlers.js         pure request logic for /api/fetch, /api/dns-chain and /api/segment-scan — {status, body} in, no transport awareness. Shared by server.js (local) and lambda/handler.js (deployed)
   lambda/handler.js        AWS Lambda entrypoint — same api-handlers.js logic, wrapped for API Gateway's event/response shape instead of node:http
-  ssrf-guard.js           IP-range blocking + guarded-redirect fetch + response-size cap for the proxy
+  ssrf-guard.js           IP-range blocking + guarded-redirect fetch + response-size cap (readTextCapped/readBytesCapped) for the proxy
   cdn-chain.js            CNAME-chain walker only (DNS-only, no SSRF surface) — naming which CDN(s) moved to cdn-fingerprint.js
   package.json            devDependency: playwright (tests only); npm scripts: start/test/test:e2e
   public/
@@ -91,13 +93,14 @@ webapp/
     glossary-ui.js          click-to-modal glossary UI (event delegation)
     explainer-ui.js         "How it works" modal — clones a <template> named by a button's data-explainer attribute (event delegation, so a panel opts in from index.html alone)
     cdn-fingerprint.js      names CDN(s) from response headers (primary) + DNS hostname suffixes (fallback) — isomorphic, no Node/DOM dependency
-    net.js                   fetchViaProxy() (now also returns headers) + fetchCdnChain() — thin wrappers around the two /api/* endpoints
+    net.js                   fetchViaProxy() (now also returns headers) + fetchCdnChain() + analyzeSegment() (direct browser fetch, proxy only as CORS fallback)
     stream-tester.js         HLS/DASH playback via hls.js/dash.js, stats, variants table (now beside the video, not below it)
     manifest-inspector.js    live manifest polling + SCTE-35 cue log + health + DRM + CDN-chain status lines
     app.js                   standalone "decode a SCTE-35 string" panel
     vast.js                  VAST/VMAP parsing + wrapper-chain resolution (pure logic, DOM-free, same style as scte35.js)
     vast-ui.js               standalone "validate a VAST/VMAP ad response" panel
     epg.js                   XMLTV + Gracenote schedule parsing and the drift comparison (pure logic, DOM-free)
+    tsanalyze.js             MPEG-TS packet analysis — PAT/PMT walk, continuity counters, TEI/sync/alignment (pure logic, DOM-free; usually runs SERVER-side, unlike its siblings)
     epg-ui.js                standalone "EPG drift" panel
   tests/
     fixtures/                committed HLS/DASH manifests + SCTE-35 payloads + VAST/VMAP fixtures (real captures + labeled synthetic ones)
@@ -132,6 +135,11 @@ Order matters and is deliberate: the EPG panel sits **above** the VAST/VMAP one 
   - HLS: scans cue tag lines (`CUE_PATTERN`), decodes any payload found, appends a timestamped entry — deduped by `#EXT-X-MEDIA-SEQUENCE`. Each cue's wall-clock time is shown too (`findCueWallclocks()` — authoritative from `#EXT-X-DATERANGE`'s `START-DATE` when present, otherwise interpolated from `#EXT-X-PROGRAM-DATE-TIME` + accumulated `#EXTINF`).
   - DASH: scans `<EventStream>`/`<Event>` (`findDashScte35Events()`), deduped by a fingerprint of event ids+times. The `xml+bin` encoding (`<Signal><Binary>`) decodes through the same `decodeScte35()` as HLS, unchanged. Pure-XML-encoded signals are explicitly flagged "not yet decoded" rather than silently dropped.
 - **Only detects out-of-band SCTE-35** (cues signaled in the manifest text itself) — not in-band cues muxed into the actual transport stream/segments, which would require demuxing the media (this tool never does, yet — see ROADMAP.md Phase 4). There's a note to this effect in the UI, with both terms linked to glossary definitions.
+- **Segment byte scan** (added 2026-09-11): a **Scan segments** button downloads 2–6 real segments and reports what no manifest can — `transport_error_indicator`, sync-byte loss, 188-byte alignment, continuity counters within each segment, and continuity *across* the joins. Also prints the PMT, so it says whether a stream carries in-band SCTE-35 (`stream_type 0x86`) rather than leaving that unknown. Logic in `public/tsanalyze.js`.
+  - **Fetched DIRECTLY from the browser**, with `/api/segment-scan` only as a CORS fallback. Segments are megabytes, and routing them through the Lambda would be egress in *and* out on every click — the surprise-bill risk ROADMAP flags for in-band SCTE-35. The Stream Tester already pulls segments straight from the browser (hls.js has to), so any stream that plays here has segments the browser can read. The output names which path was used.
+  - **User-triggered only, never on the poll loop**, count capped at 6, and it inherits the Inspector's lowest-bandwidth-variant default — three 144p segments is ~0.6MB, not 9MB.
+  - **`reset` and `jump` are deliberately separate verdicts.** A counter restarting at 0 each segment is packager configuration, harmless to players that decode segments independently, and the usual cause of ffmpeg reporting `Packet corrupt` once per segment on a perfectly healthy stream. A jump has the shape of real loss. Collapsing them sends an operator hunting an encoder fault that doesn't exist. A reset is also *indistinguishable* from continuous when the previous segment ends at CC 15 (1-in-16), which the UI flags rather than reporting a clean boundary that only looks clean.
+- **Log boxes hold the reader's scroll position** (2026-09-11). `preservingScroll()` in `manifest-inspector.js`: follow the tail only while the reader is already at the tail; otherwise restore their exact offset. Scrolling back to the bottom re-arms following, so there is no mode to toggle — the scroll position is the signal. Fixes two different bugs with one rule: the SCTE log appended and jumped to the newest line, while the manifest box replaces its whole contents each poll (assigning `innerHTML` threw the view to the *top*). A 4px tolerance on the at-bottom test matters — `scrollHeight`/`clientHeight`/`scrollTop` go fractional under browser zoom or HiDPI, and an exact comparison would never match, leaving a log permanently "scrolled up" and never following again. Caveat: the manifest box's window slides, so a held offset stays steady while the lines under it drift ~1 segment per poll. **Still jumping, not yet converted**: the EPG drift log (`epg-ui.js`) and the Stream Tester log (`stream-tester.js`) — extending means promoting the helper to a shared module.
 - **Sequence status line** (added 2026-09-10): states on every poll how `#EXT-X-MEDIA-SEQUENCE` moved — `sequential` (green), `skipped`/`rewound` (red), `unchanged`, or `first`/`unknown` (neutral) — via `compareMediaSequence()` in `scte35.js`. Distinct from the Health line, which reports exceptions only, so silence there means "healthy or not-yet-checked"; this states the current step positively. **Continuity is only observable across two polls** — inside a single playlist the numbering is sequential by construction (MEDIA-SEQUENCE labels the first segment, every later one is +1, and no field can express a hole), so a skip can never be seen in one snapshot. Anomalies accumulate into a per-target tally that survives later clean polls, and a clean poll after an anomaly reads amber rather than green — an event you can only catch by watching the right second isn't a monitor. `detectSequenceGap()` still exists as the narrow skip-only view and now delegates to the same function.
   - **A backwards jump used to read as healthy.** `detectSequenceGap()` only tested `advanced > prevSegCount`, so a sequence going *backwards* (packager restart, or failover to an origin numbering independently) returned `null` — indistinguishable from fine. It's arguably worse than a skip, since every sequence and timestamp a client has cached becomes meaningless. Now its own `rewound` state.
 - **Health status line**: sequence gaps, `#EXT-X-DISCONTINUITY` counts, live-edge staleness (no new segments for 3× target duration), and variant-ladder monotonicity anomalies (checked once at master load). Shows "OK" or amber warning text. HLS-only — clears for DASH.
@@ -203,7 +211,7 @@ Any recognized SCTE-35/HLS term in decoded output (splice command names, segment
 
 - **`pts_adjustment` bug — fixed** (2026-08-16). Was documented but never applied; now added to every absolute PTS, never to `break_duration` (a relative span). Regression-tested.
 - **`/api/fetch` SSRF hardening — done** (2026-08-16), in `ssrf-guard.js`. Blocks loopback/RFC1918/link-local (incl. cloud IMDS)/CGNAT + IPv6 equivalents, re-validates every redirect hop instead of blindly following, caps response size at 20MB. Verified with unit tests, e2e tests (via an explicit test-only bypass env var, `SSRF_GUARD_ALLOW_PRIVATE_TARGETS`, off by default), and a manual check against the real running server. **Known remaining gap, documented in the file**: doesn't pin the TCP connection to the pre-validated IP, so a DNS-rebinding attack (address changes between our check and fetch's own re-resolution) isn't fully closed — worth revisiting when this lands on a public Lambda (Phase 3).
-- **Test suite**: 314 unit + 26 e2e, all passing as of 2026-09-10. See ROADMAP.md Phase 0 and the "Running it" section above. (Counts move constantly — re-run rather than trusting this number.)
+- **Test suite**: 341 unit + 27 e2e, all passing as of 2026-09-11. See ROADMAP.md Phase 0 and the "Running it" section above. (Counts move constantly — re-run rather than trusting this number.)
 - DASH playback was verified end-to-end with a headless-browser test against `dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd` — real frame decode, stats, variants table, and manifest all confirmed working (2026-08-13); now a permanent e2e test.
 - The server previously crashed entirely (unhandled exception, not just a 400) on a malformed request URL — fixed by wrapping the `new URL(...)` parse in try/catch in `server.js`; now covered by an e2e test too.
 - `/api/log` (old "save watch log to server file" feature) was removed along with the old Watch panel — dead code, nothing calls it anymore.

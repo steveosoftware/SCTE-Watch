@@ -371,6 +371,40 @@ Glossary gained `EXT-X-MEDIA-SEQUENCE`, `EXT-X-DISCONTINUITY` and `EXT-X-DISCONT
 
 Verified: 314 unit + 26 e2e passing, plus a real-browser run stepping a stream through healthy → skip → rewind → healthy and confirming the colour and the persisting tally at each stage.
 
+
+### Segment byte scan — 2026-09-11
+
+Came out of diagnosing a real channel that was reported as having "corrupt media packets". It didn't. ffmpeg reported `Packet corrupt` once per segment, spaced exactly one segment duration apart, because the packager restarts MPEG-TS continuity counters at 0 at the start of every segment. No `transport_error_indicator` anywhere, no sync-byte loss, every segment 188-byte aligned and internally continuous, and each one decoding clean in isolation. The media was fine; the *diagnosis* would have sent an encoder team hunting a fault that doesn't exist.
+
+That distinction is the feature. `public/tsanalyze.js` walks real packets and separates two questions the tooling had been conflating:
+
+- **Is the media damaged?** `transport_error_indicator`, sync-byte loss, 188-byte alignment, and continuity errors *within* a segment.
+- **Do counters survive the joins?** Continuity *across* boundaries, which a single-segment scan cannot answer and which is where the reported "corruption" actually lived.
+
+`reset` and `jump` are separate verdicts on purpose. A reset is packager configuration and harmless to players that decode each segment independently; a jump has the shape of genuine loss. One number for both would reproduce exactly the misdiagnosis that prompted this. A reset is also indistinguishable from continuous when the previous segment happens to end at CC 15 — a 1-in-16 coincidence the UI names rather than reporting a clean boundary that only looks clean. Worth knowing: the widely-used mux.dev reference stream does the same reset, so this is common packager behaviour rather than evidence of a broken vendor.
+
+The scan also prints the PMT, which answers a question that had needed guesswork: whether a stream carries in-band SCTE-35 at all. No `stream_type 0x86` in the PMT means nothing consuming in-band cues will ever see anything.
+
+**Client-side by default, and that was a deliberate reversal.** This started as a server endpoint, on the reasoning that `/api/fetch` exists because of CORS. But segments are megabytes, and routing them through the Lambda is egress in *and* out per click — precisely the surprise-bill risk flagged under in-band SCTE-35 below. The Stream Tester already pulls segments straight from the browser because hls.js has to, so any stream that plays in this app has segments the browser can read. `analyzeSegment()` fetches directly and falls back to `/api/segment-scan` only when CORS refuses; the output says which path it took. Three further guards: button-triggered rather than on the poll loop, a cap of 6 segments, and the Inspector's existing lowest-bandwidth-variant default, which made a real three-segment scan 0.6MB rather than 9MB.
+
+`tsanalyze.js` is pure and DOM-free like `scte35.js`/`vast.js`/`epg.js`, but unlike them its usual host is the server — the fallback path analyzes there and returns a few hundred bytes of summary rather than base64-ing megabytes back to the client.
+
+**This is also the first real step toward in-band SCTE-35** (Phase 4): fetching a segment and demuxing far enough to read the PMT is most of the scaffolding that item needs. The cost strategy that item demands is now partly answered by the pattern here — on demand, client-side, capped.
+
+Tested: 21 unit tests over six synthetic TS fixtures built to exercise one boundary behaviour each (continuous / reset / jump / TEI / SCTE-35-in-PMT), plus endpoint tests asserting the analysis is returned and the raw bytes never are. One fixture bug found and fixed on the way: a "continuous" segment has to continue *each PID* from where it left off, and PAT/PMT emit once per segment while audio emits three times, so they don't all resume at the same number.
+
+### Log boxes stop stealing the scroll — 2026-09-11
+
+Operator was reading back through the variant and SCTE logs while polling continued and kept getting thrown back to the newest line.
+
+One rule, applied to both: follow the tail only while the reader is already at the tail. Scroll up and the position holds however many polls arrive; scroll back to the bottom and following re-arms. The scroll position is the signal, so there's no mode to toggle and nothing to remember.
+
+It fixed two different bugs. The SCTE log appends and was explicitly jumping to the bottom. The manifest box *replaces* its whole contents each poll, so assigning `innerHTML` was resetting the view to the **top** — the same symptom from the opposite direction.
+
+Two details worth recording. The at-bottom test carries a 4px tolerance because `scrollHeight`/`clientHeight`/`scrollTop` go fractional under browser zoom or a HiDPI scale factor, and an exact comparison would silently never match — leaving a log permanently "scrolled up", never following again, which is a worse bug than the one being fixed. And the manifest box's window slides (a segment off the top, one onto the bottom, every poll), so a restored offset keeps the viewport steady while the lines under it drift by about a segment per poll; holding a specific line would mean anchoring on line identity, which the sliding window makes its own problem.
+
+Not converted: the EPG drift log and the Stream Tester log still jump. Extending means promoting the helper out of `manifest-inspector.js` into a shared module.
+
 ---
 
 ## Hygiene backlog

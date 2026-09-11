@@ -5,7 +5,7 @@
 // don't reliably retain the raw text, and a separate fetch keeps this panel
 // decoupled from whichever playback engine is in use.
 
-import { fetchViaProxy, fetchCdnChain } from "./net.js";
+import { fetchViaProxy, fetchCdnChain, analyzeSegment } from "./net.js";
 import {
   parseMaster,
   extractPayloadFromTagLine,
@@ -26,6 +26,7 @@ import {
   summarizeDrm,
 } from "./scte35.js";
 import { escapeHtml, linkifyTagLine } from "./glossary.js";
+import { analyzeTsSegment, compareSegmentBoundary } from "./tsanalyze.js";
 import { buildCdnChain } from "./cdn-fingerprint.js";
 
 const $ = (id) => document.getElementById(id);
@@ -41,12 +42,21 @@ const scteStatusEl = $("manifest-scte-status");
 const scteOutputEl = $("manifest-scte-output");
 const manifestDownloadBtn = $("manifest-download-btn");
 const scteDownloadBtn = $("scte-download-btn");
+const tsScanBtn = $("ts-scan-btn");
+const tsScanCount = $("ts-scan-count");
+const tsScanStatus = $("ts-scan-status");
+const tsScanOutput = $("ts-scan-output");
 
 let pollTimer = null;
 let variants = [];
 let currentFormat = null;
 let lastSeq = null;
 let lastDashEventsKey = null;
+// The media playlist currently being polled. The segment scan needs it to
+// resolve segment URIs, and it is NOT the URL the tester was given — that
+// may have been a master.
+let watchedPlaylistUrl = null;
+let watchedPlaylistText = null;
 let ladderAnomalies = []; // set once at master load; surfaced on every health update since it's a load-time, not per-poll, finding
 
 function ts() {
@@ -57,9 +67,46 @@ function intervalMs() {
   return Math.max(1, parseFloat(intervalInput.value) || 4) * 1000;
 }
 
+// Keeps a log box following new output WITHOUT stealing the scroll position
+// from someone reading back through it.
+//
+// The rule: follow the tail only while the reader is already at the tail.
+// Scroll up and your position is held, however many polls arrive; scroll
+// back to the bottom and following re-arms on its own. No mode to toggle,
+// nothing to remember — the scroll position IS the signal.
+//
+// Both boxes here update every few seconds, which is what makes the naive
+// version unusable: the SCTE log appends and jumps to the newest line, and
+// the manifest box replaces its whole contents (so assigning innerHTML
+// resets the view to the top). Different mechanics, same problem.
+//
+// A few pixels of tolerance because scrollHeight/clientHeight/scrollTop can
+// be fractional under browser zoom or a HiDPI scale factor, and an exact
+// equality test would silently never match — leaving the log permanently
+// "scrolled up" and never following again.
+const SCROLL_TAIL_TOLERANCE_PX = 4;
+
+function isPinnedToTail(el) {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_TAIL_TOLERANCE_PX;
+}
+
+// Note for the replace-everything case (the manifest box): restoring the
+// same scrollTop is the best available anchor, but a live playlist window
+// slides — each poll drops a segment off the top and adds one at the
+// bottom — so the lines under that offset drift by roughly one segment per
+// poll. Far better than being thrown to the top, short of anchoring on a
+// specific line's identity, which the sliding window makes its own problem.
+function preservingScroll(el, mutate) {
+  const pinned = isPinnedToTail(el);
+  const previousTop = el.scrollTop;
+  mutate();
+  el.scrollTop = pinned ? el.scrollHeight : previousTop;
+}
+
 function appendScteHtml(html) {
-  scteOutputEl.innerHTML += (scteOutputEl.textContent ? "\n" : "") + html;
-  scteOutputEl.scrollTop = scteOutputEl.scrollHeight;
+  preservingScroll(scteOutputEl, () => {
+    scteOutputEl.innerHTML += (scteOutputEl.textContent ? "\n" : "") + html;
+  });
 }
 
 // Mirrors the old watch loop: only log when the media sequence actually
@@ -136,7 +183,9 @@ function updateScteCues(text) {
 // "download manifest" button both keep working against the raw text.
 function render(text) {
   if (outputEl.textContent === text) return;
-  outputEl.innerHTML = text.split("\n").map(linkifyTagLine).join("\n");
+  preservingScroll(outputEl, () => {
+    outputEl.innerHTML = text.split("\n").map(linkifyTagLine).join("\n");
+  });
   updateScteCues(text);
 }
 
@@ -322,6 +371,10 @@ function watch(url, stillLive) {
     try {
       const { text, headers } = await fetchViaProxy(url);
       render(text);
+      watchedPlaylistText = text;
+      // Enable the segment scan only for HLS media playlists — it needs
+      // #EXTINF segment URIs to resolve, which a master doesn't have.
+      tsScanBtn.disabled = !(currentFormat === "hls" && /#EXTINF/.test(text));
       // Order matters: updateHealth() consumes prevText and then advances
       // it to this poll's text, so anything else comparing against the
       // previous fetch has to run first.
@@ -340,6 +393,9 @@ function watch(url, stillLive) {
 }
 
 function watchTarget(url, stillLive) {
+  watchedPlaylistUrl = url;
+  watchedPlaylistText = null;
+  tsScanBtn.disabled = true;
   lastSeq = null;
   lastDashEventsKey = null;
   scteOutputEl.textContent = "";
@@ -449,3 +505,142 @@ manifestDownloadBtn.addEventListener("click", () => {
 scteDownloadBtn.addEventListener("click", () => {
   downloadText(scteOutputEl.textContent, `scte35_markers_${Date.now()}.log`);
 });
+
+// ---------------------------------------------------- segment byte scan
+
+// Reads real segment bytes and reports what the manifest cannot: whether
+// packets are intact, and whether continuity counters survive the joins
+// between segments.
+//
+// Explicitly user-triggered, and it says so in the UI. Everything else in
+// this panel costs a few KB per poll; this costs megabytes per click, so
+// running it on a timer would quietly turn a diagnostic into a bandwidth
+// bill. The count is capped in the markup for the same reason.
+//
+// The distinction it exists to draw: a counter RESET at every boundary is
+// packager configuration, harmless to players that decode each segment
+// independently, and the usual cause of ffmpeg reporting "Packet corrupt"
+// once per segment on an otherwise perfect stream. A JUMP has the shape of
+// real loss. Reporting them as one number sends people hunting for an
+// encoder fault that isn't there.
+function segmentUris(playlistText, playlistUrl) {
+  const out = [];
+  for (const raw of playlistText.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    try {
+      out.push(new URL(line, playlistUrl).href);
+    } catch {
+      /* a relative URI we can't resolve is skipped rather than fatal */
+    }
+  }
+  return out;
+}
+
+function tsLine(text, cls) {
+  tsScanOutput.innerHTML += (tsScanOutput.textContent ? "\n" : "") + (cls ? `<span class="${cls}">${escapeHtml(text)}</span>` : escapeHtml(text));
+}
+
+async function runSegmentScan() {
+  if (!watchedPlaylistText || !watchedPlaylistUrl) return;
+  const want = Math.max(2, Math.min(6, parseInt(tsScanCount.value, 10) || 3));
+  const uris = segmentUris(watchedPlaylistText, watchedPlaylistUrl).slice(0, want);
+  if (uris.length < 2) {
+    tsScanStatus.textContent = "Need at least 2 segments in the playlist window.";
+    tsScanStatus.className = "status warn";
+    return;
+  }
+
+  tsScanBtn.disabled = true;
+  tsScanOutput.hidden = false;
+  tsScanOutput.innerHTML = "";
+  tsScanStatus.className = "status";
+  tsScanStatus.textContent = `Fetching ${uris.length} segments…`;
+
+  try {
+    const scans = [];
+    let totalBytes = 0;
+    let via = null;
+    for (let i = 0; i < uris.length; i++) {
+      tsScanStatus.textContent = `Fetching segment ${i + 1} of ${uris.length}…`;
+      const r = await analyzeSegment(uris[i], analyzeTsSegment);
+      scans.push(r.analysis);
+      totalBytes += r.bytes || 0;
+      via = r.via;
+    }
+
+    const first = scans[0];
+    tsLine(`${uris.length} segments, ${(totalBytes / 1048576).toFixed(1)} MB, fetched ${via === "proxy" ? "via the server proxy (CORS blocked a direct read)" : "directly from the browser"}`);
+    if (first.pmt) {
+      const streams = first.pmt.streams.map((x) => `0x${x.pid.toString(16).padStart(4, "0")} ${x.name}`);
+      tsLine(`PMT: ${streams.join("   ")}`);
+      if (!first.pmt.streams.some((x) => x.streamType === 0x86)) {
+        tsLine("     no stream_type 0x86 — this stream carries no in-band SCTE-35", "line-muted");
+      }
+    }
+
+    // Per-segment integrity. These are the flags that indicate genuinely
+    // damaged media, as opposed to the boundary question below.
+    let tei = 0, sync = 0, within = 0, unaligned = 0;
+    for (const s of scans) {
+      tei += s.transportErrors;
+      sync += s.syncLoss;
+      within += s.ccErrorsWithin;
+      if (!s.aligned) unaligned += 1;
+    }
+    const clean = tei === 0 && sync === 0 && within === 0 && unaligned === 0;
+    tsLine("");
+    tsLine("integrity, per segment:");
+    tsLine(`   transport_error_indicator ... ${tei}`, tei ? "line-bad" : "line-ok");
+    tsLine(`   sync-byte loss .............. ${sync}`, sync ? "line-bad" : "line-ok");
+    tsLine(`   188-byte misalignment ....... ${unaligned}`, unaligned ? "line-bad" : "line-ok");
+    tsLine(`   CC errors WITHIN a segment .. ${within}`, within ? "line-bad" : "line-ok");
+
+    // The boundary question, which a single-segment scan cannot answer.
+    tsLine("");
+    tsLine(`continuity ACROSS the ${scans.length - 1} boundar${scans.length - 1 === 1 ? "y" : "ies"}:`);
+    let resets = 0, jumps = 0, coincidences = 0;
+    for (let i = 1; i < scans.length; i++) {
+      for (const r of compareSegmentBoundary(scans[i - 1], scans[i])) {
+        if (r.state === "absent") continue;
+        const label = `   seg ${i} -> ${i + 1}  PID 0x${r.pid.toString(16).padStart(4, "0")}${r.name ? ` (${r.name})` : ""}`;
+        if (r.state === "reset") {
+          resets += 1;
+          tsLine(`${label}  last CC ${r.lastCc}, expected ${r.expected}, got ${r.firstCc} — RESET`, "line-bad");
+        } else if (r.state === "jump") {
+          jumps += 1;
+          tsLine(`${label}  last CC ${r.lastCc}, expected ${r.expected}, got ${r.firstCc} — JUMP`, "line-bad");
+        } else {
+          if (r.coincidental) coincidences += 1;
+          tsLine(`${label}  continuous (${r.lastCc} -> ${r.firstCc})${r.coincidental ? " — but a reset looks identical here" : ""}`, "line-ok");
+        }
+      }
+    }
+
+    tsLine("");
+    if (resets && clean) {
+      tsLine("VERDICT: counters restart at each segment. Nothing is damaged — no error flags,", "line-bad");
+      tsLine("no sync loss, every segment internally continuous. This is what makes ffmpeg", "line-bad");
+      tsLine("report \"Packet corrupt\" once per segment. It is a packager setting, not corrupt media.", "line-bad");
+    } else if (jumps) {
+      tsLine("VERDICT: counters JUMP across a boundary — the shape of genuine packet loss.", "line-bad");
+    } else if (clean) {
+      tsLine("VERDICT: clean. Counters carry across boundaries and no integrity flags are set.", "line-ok");
+    } else {
+      tsLine("VERDICT: integrity flags set above — see the per-segment counts.", "line-bad");
+    }
+    if (coincidences) {
+      tsLine(`(${coincidences} boundary/ies read as continuous only because the previous segment ended at 15;`, "line-muted");
+      tsLine(" a reset to 0 is indistinguishable there. Re-scan for a clearer read.)", "line-muted");
+    }
+
+    tsScanStatus.textContent = `Scanned ${uris.length} segments (${(totalBytes / 1048576).toFixed(1)} MB).`;
+  } catch (e) {
+    tsScanStatus.textContent = `Scan failed: ${e.message}`;
+    tsScanStatus.className = "status warn";
+  } finally {
+    tsScanBtn.disabled = false;
+  }
+}
+
+tsScanBtn.addEventListener("click", runSegmentScan);
