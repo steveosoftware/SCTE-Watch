@@ -9,7 +9,7 @@ Update this alongside `CONTEXT.md` as items land.
 
 ## Open decisions (not yet made)
 
-- **`scte35watch.py`** — the original CLI at repo root. Actively maintained, deprecated in favor of the web app, or kept as reference? Its fate affects whether it gets test coverage and whether the in-band work should reuse it (it's already Python, which is the natural host for `threefive`).
+- **`scte35watch.py`** — the original CLI at repo root. Actively maintained, deprecated in favor of the web app, or kept as reference? Its fate affects whether it gets test coverage. (It used to also bear on the in-band SCTE-35 work, as the natural host for a Python `threefive` subprocess — that reasoning is dead: in-band is pure JS, see the corrected Phase 4 entry. The question is now purely about the CLI itself.)
 - **hls.js / dash.js delivery** — currently loaded from jsdelivr at floating major versions with no integrity hashes (see Hygiene below). Pin exact versions + SRI, or vendor the files into `public/`? Vendoring also removes a runtime external dependency, which matters for an Amplify deploy.
 
 ## Sequence
@@ -60,7 +60,7 @@ All shipped in `scte35.js` (pure, portable — still runs under plain Node, no D
 
 ## Phase 3 — AWS Amplify hosting migration ✅ Done
 
-Blocks: ccextractor captions, in-band SCTE-35 (if it needs native tools), the Gracenote proxy, and likely the VAST/VMAP fetch. **All of those still not started** — this phase only unblocked them.
+Blocks: ccextractor captions and the Gracenote proxy. (Originally listed in-band SCTE-35 too — **it isn't blocked by this phase**, corrected 2026-09-11: it's pure JS and runs in the browser. The VAST/VMAP fetch shipped 2026-08-18 through the existing proxy.)
 
 `server.js` was a persistent `http.createServer` process, which doesn't map onto Amplify Hosting (static output + optional framework SSR compute, no arbitrary always-on custom server). Split the concerns:
 
@@ -101,11 +101,40 @@ New endpoint: fetch a segment or two (not the whole stream), pipe through a bund
 
 **Scoped to MPEG-TS.** Confirmed with the user (2026-08-18): their setups are standard HLS with `.ts` segments, not fMP4 — the fMP4/`emsg` path (originally floated as the cheaper no-native-dependency option) is **not** a priority here and can be deprioritized/dropped from the plan. Build for MPEG-TS first.
 
-- **MPEG-TS**: needs real PID/PES demuxing — lean on `threefive` (Python, parses both in-band and out-of-band) as a subprocess, or `tsduck`. `threefive` fits naturally given the project's Python origin. This means **this item needs the Amplify Function migration (Phase 3)** or an equivalent place to run a subprocess — unlike the fMP4 path, there's no realistic pure-JS shortcut for TS demuxing.
+~~**MPEG-TS**: needs real PID/PES demuxing — lean on `threefive` (Python) as a subprocess, or `tsduck`… this item needs an equivalent place to run a subprocess — there's no realistic pure-JS shortcut for TS demuxing.~~
 
-Fetch a real segment, demux, extract the `splice_info_section`, run it through the **existing** `decodeScte35()` — the binary format is identical to out-of-band, only the transport differs, so the decoder needs zero changes.
+**CORRECTED 2026-09-11 — no subprocess, no native tool, and no server needed.** That assessment predates `public/tsanalyze.js` (built for the segment byte scan) and rested on an assumption that turns out to be wrong. Demonstrated working end to end in pure JS against a real `splice_insert` captured from a live channel:
 
-**Cost / sampling strategy — must be decided before building.** Manifest polling is a few KB per tick; repeatedly fetching *segments* to scan for in-band cues is orders of magnitude more bandwidth, plus per-invocation Lambda cost and egress. Needs an explicit strategy — on-demand only, 1-in-N sampling, or only-on-discontinuity — or this becomes a surprise bill.
+1. **Find the PID** — `analyzeTsSegment()` already walks PAT → PMT and surfaces `stream_type 0x86`. **Built.**
+2. **Reassemble the section** — ~25 lines. **New, and the only new code needed.**
+3. **Decode** — `decodeScte35()`, unchanged. **Built.**
+
+Why the "needs PES demuxing" premise was wrong: **SCTE-35 in TS is section-carried, not PES.** The expensive part of demuxing is reassembling PES streams — video scattered across thousands of packets with adaptation fields and PTS handling. A splice_info_section is PSI-shaped: pointer_field, `table_id` `0xFC`, a 12-bit `section_length`, done — and almost always inside a single 188-byte packet. The original note's own prediction about the decoder was exactly right (`decodeScte35()` already rejects anything whose first byte isn't `0xFC`, so section bytes drop straight in); it just overestimated the step before it.
+
+Consequence: this can run **in the browser**, like the segment byte scan, via `analyzeSegment()`'s direct-fetch-with-proxy-fallback. A Lambda works too but buys nothing and costs egress. Phase 3 is *not* a prerequisite for this item.
+
+Not yet proven: multi-packet sections (the reassembler handles them, but only the single-packet path is tested — that's the normal case), behaviour against a real in-band stream (none available; the fixture is synthetic around a real payload), and cross-poll dedupe (a cue lives in the stream for its whole lifetime, so it needs the same media-sequence keying the manifest path already uses).
+
+**Cost / sampling strategy — still the real open question, and the only one.** Measured against a live channel 2026-09-11 (727-byte playlist, 3.1MB 1080p segment, 217KB 144p segment, 6.006s segments, 4s poll), for 24h of *continuous* monitoring:
+
+| | per 24h |
+|---|---|
+| manifest polling only (today) | 15 MB |
+| + scan every segment, 144p | 2.9 GB |
+| + scan every segment, 1080p | **41.6 GB** (~2,843x) |
+| + 1-in-10 sampling, 1080p | 4.2 GB |
+| + 1-in-10 sampling, 144p | 313 MB |
+| one on-demand 3-segment scan (144p) | 0.6 MB |
+
+The jump is the whole point: an out-of-band cue lives in a 727-byte file, an in-band cue lives in a 3.1MB one, and nothing in the code looks different — it's one `fetch()`.
+
+Options, with the trade named:
+
+- **On-demand** — what the segment byte scan does. Free until pressed; useless for catching a cue you weren't already watching for.
+- **1-in-N sampling** — 10x cheaper, but a 30s break spans ~5 segments, so 1-in-10 misses whole breaks. Trading correctness for cost, and for *cue detection* that trade is bad.
+- **Only-on-discontinuity** — best of the three. Breaks usually coincide with `#EXT-X-DISCONTINUITY`, which is visible in the cheap file, so poll manifests and open segments only when the manifest says something happened. Caveat: a packager that sets no discontinuity tags (like stream_37099, verified) makes this blind.
+
+Two things that shrink the problem regardless: **pick the lowest-bandwidth variant** (217KB vs 3.1MB, a free 14x, and the SCTE-35 PID carries identical bytes in every rendition — cues aren't re-encoded per variant), and **fetch client-side** so there is no Lambda egress at all. With both, "surprise bill" becomes a bandwidth-politeness question about someone else's CDN rather than an AWS invoice.
 
 **UI design question, still open**: how to show in-band and out-of-band cues together without cluttering the Manifest Inspector — likely two clearly-labeled sub-columns or a toggle within the existing SCTE-35 cues box, reusing the glossary system rather than inventing new vocabulary. Needs a real design pass once detection works.
 
