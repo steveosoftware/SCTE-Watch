@@ -814,6 +814,99 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  // A live playlist only holds its window (~10 segments). Redrawing it each
+  // poll meant everything older was gone, with no way to look back at a
+  // segment that had rolled off.
+  test("variant log accumulates every segment instead of showing only the live window", async () => {
+    const { page } = await newPage();
+    const WINDOW = 5;
+    let poll = 0;
+    await page.route("**/api/fetch**", (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const seq = 500 + poll++;                 // window slides one per poll
+      const lines = ["#EXTM3U", "#EXT-X-VERSION:3", `#EXT-X-MEDIA-SEQUENCE:${seq}`, "#EXT-X-TARGETDURATION:7"];
+      for (let i = 0; i < WINDOW; i++) {
+        lines.push(`#EXT-X-PROGRAM-DATE-TIME:2026-09-16T10:00:${String((seq + i) % 60).padStart(2, "0")}.000Z`);
+        lines.push("#EXTINF:6.006,", `https://cdn.test/s${seq + i}.ts`);
+      }
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text: lines.join("\n") + "\n", finalUrl: target, headers: {} }) });
+    });
+
+    await page.goto(BASE_URL);
+    await page.fill("#manifest-interval", "1");
+    await page.evaluate(() =>
+      document.dispatchEvent(new CustomEvent("tester:load", { detail: { url: "https://cdn.test/media.m3u8", format: "hls" } }))
+    );
+
+    // Wait until more segments are logged than the window can ever hold —
+    // that is only possible if older ones were kept.
+    await page.waitForFunction(
+      (w) => ((document.getElementById("manifest-output")?.textContent || "").match(/cdn\.test\/s\d+\.ts/g) || []).length > w,
+      WINDOW,
+      { timeout: 20000 }
+    );
+
+    const text = await page.textContent("#manifest-output");
+    const segs = text.match(/cdn\.test\/s(\d+)\.ts/g).map((m) => Number(m.match(/\d+/)[0]));
+    assert.ok(segs.length > WINDOW, `expected more than one window, got ${segs.length}`);
+    // The oldest logged segment must sit OUTSIDE the newest window — that is
+    // only possible if segments were kept after rolling off. (The very first
+    // fetch is consumed by startHls detecting this isn't a master, so polling
+    // begins one segment in; assert the property, not a literal number.)
+    assert.ok(
+      segs[0] < segs[segs.length - 1] - WINDOW + 1,
+      `oldest logged (${segs[0]}) should predate the live window ending at ${segs[segs.length - 1]}`
+    );
+    assert.deepEqual(segs, [...new Set(segs)], "each segment logged exactly once, no repeats across polls");
+    assert.deepEqual(segs, [...segs].sort((a, b) => a - b), "in order");
+
+    // The header is emitted once; PROGRAM-DATE-TIME changes every poll but is
+    // a segment tag, so it must not be mistaken for the header changing.
+    assert.equal((text.match(/#EXTM3U/g) || []).length, 1, "header emitted once");
+    assert.ok(!/header changed/.test(text), "no spurious header-changed banners");
+
+    await page.close();
+  });
+
+  test("the accumulating variant log holds the reader's scroll position", async () => {
+    const { page } = await newPage();
+    let poll = 0;
+    await page.route("**/api/fetch**", (route) => {
+      const target = new URL(route.request().url()).searchParams.get("url") || "";
+      const seq = 700 + poll++;
+      const lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:7", `#EXT-X-MEDIA-SEQUENCE:${seq}`];
+      for (let i = 0; i < 6; i++) lines.push("#EXTINF:6.006,", `https://cdn.test/t${seq + i}.ts`);
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ text: lines.join("\n") + "\n", finalUrl: target, headers: {} }) });
+    });
+    await page.goto(BASE_URL);
+    await page.fill("#manifest-interval", "1");
+    await page.evaluate(() =>
+      document.dispatchEvent(new CustomEvent("tester:load", { detail: { url: "https://cdn.test/media.m3u8", format: "hls" } }))
+    );
+    await page.waitForFunction(
+      () => { const el = document.getElementById("manifest-output"); return el && el.scrollHeight > el.clientHeight + 40; },
+      { timeout: 20000 }
+    );
+
+    // Park in the middle and confirm the SAME LINES stay under the viewport —
+    // stronger than the scrollTop check, and now meaningful because an
+    // append-only log doesn't slide content out from under the reader.
+    const before = await page.$eval("#manifest-output", (el) => {
+      el.scrollTop = Math.floor((el.scrollHeight - el.clientHeight) / 2);
+      return el.scrollTop;
+    });
+    await page.waitForTimeout(4000);
+    const after = await page.$eval("#manifest-output", (el) => el.scrollTop);
+    assert.equal(after, before, "must not move the reader while polls arrive");
+
+    await page.$eval("#manifest-output", (el) => { el.scrollTop = el.scrollHeight; });
+    await page.waitForTimeout(3000);
+    const pinned = await page.$eval("#manifest-output", (el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 4);
+    assert.ok(pinned, "returning to the bottom re-arms following");
+
+    await page.close();
+  });
+
   test("DRM signaling: multi-DRM ContentProtection is detected in the real UI", async () => {
     const { page } = await newPage();
     await page.goto(BASE_URL);

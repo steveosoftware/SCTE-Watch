@@ -13,6 +13,12 @@
 <main>
   <section class="panel" id="tester-panel">
     <h2>HLS &amp; DASH Stream Tester</h2>
+    <!-- Controls sit to the right of the URL, which costs the input some
+         width. Kept that way deliberately: the browser's native autofill
+         dropdown is always exactly as wide as the input it belongs to (it
+         can't be styled), so what matters is that the input keeps `flex: 1`
+         and takes whatever the row has spare — stream URLs are long and
+         differ only in their tail. -->
     <div class="row">
       <label for="tester-url">Stream URL</label>
       <input id="tester-url" type="text" placeholder="https://example.com/master.m3u8 or .mpd">

@@ -18,6 +18,7 @@ import {
   extractTargetDuration,
   detectSequenceGap,
   compareMediaSequence,
+  splitMediaPlaylist,
   findDiscontinuities,
   isPlaylistStale,
   findVariantLadderAnomalies,
@@ -52,6 +53,12 @@ let variants = [];
 let currentFormat = null;
 let lastSeq = null;
 let lastDashEventsKey = null;
+// Accumulating-log state, scoped per watched target like the health state —
+// after a dropdown switch the previous variant's sequence numbers say
+// nothing about this one.
+let highestSeqLogged = null;
+let lastHeaderKey = null;
+let loggedSegmentCount = 0;
 // The media playlist currently being polled. The segment scan needs it to
 // resolve segment URIs, and it is NOT the URL the tester was given — that
 // may have been a master.
@@ -103,10 +110,20 @@ function preservingScroll(el, mutate) {
   el.scrollTop = pinned ? el.scrollHeight : previousTop;
 }
 
-function appendScteHtml(html) {
-  preservingScroll(scteOutputEl, () => {
-    scteOutputEl.innerHTML += (scteOutputEl.textContent ? "\n" : "") + html;
+// Appends without reassigning innerHTML.
+//
+// `innerHTML +=` re-serializes the entire element on every call, so a log
+// that grows all session costs O(n^2) and visibly stalls after a few
+// thousand lines. insertAdjacentHTML appends without touching what is
+// already there.
+function appendHtml(el, html) {
+  preservingScroll(el, () => {
+    el.insertAdjacentHTML("beforeend", (el.textContent ? "\n" : "") + html);
   });
+}
+
+function appendScteHtml(html) {
+  appendHtml(scteOutputEl, html);
 }
 
 // Mirrors the old watch loop: only log when the media sequence actually
@@ -174,18 +191,77 @@ function updateScteCues(text) {
   if (currentFormat === "dash") return updateScteCuesDash(text);
 }
 
-// Renders the raw manifest with known vocabulary (SCTE cue tags,
-// EXT-X-MEDIA/subtitle/caption/language attributes, DASH Role/Accessibility)
-// linked to their glossary definitions — the same treatment the SCTE cue
-// log already gets. outputEl.textContent still reads back the original
-// unwrapped text afterwards (glossaryTerm only ever wraps existing
-// substrings, never adds characters), so the unchanged-check and the
-// "download manifest" button both keep working against the raw text.
-function render(text) {
+// Renders known vocabulary (SCTE cue tags, EXT-X-MEDIA/subtitle/caption/
+// language attributes, DASH Role/Accessibility) linked to its glossary
+// definitions. outputEl.textContent still reads back the original unwrapped
+// text (glossaryTerm only ever wraps existing substrings, never adds
+// characters), so the "download variant log" button keeps working.
+//
+// ACCUMULATES for HLS media playlists rather than showing a snapshot.
+// A live playlist only ever holds its window — about 10 segments, a minute
+// of air — so redrawing it each poll meant everything older was simply gone,
+// with no way to look back at a segment that had rolled off. Keyed on
+// #EXT-X-MEDIA-SEQUENCE, each segment is appended exactly once, with the tag
+// lines that preceded it (#EXT-X-DISCONTINUITY, cue tags, PDT, KEY)
+// travelling with it — those are usually the thing being scrolled back to,
+// and they are meaningless detached from their segment.
+//
+// Accumulation only makes sense where there are segments to accumulate.
+// A master playlist and a DASH MPD are single documents that get rewritten,
+// not appended to, so those keep the replace-on-change behaviour.
+function renderSnapshot(text) {
   if (outputEl.textContent === text) return;
   preservingScroll(outputEl, () => {
     outputEl.innerHTML = text.split("\n").map(linkifyTagLine).join("\n");
   });
+}
+
+function renderAccumulating(text) {
+  const { headerLines, segments, mediaSequence } = splitMediaPlaylist(text);
+  if (mediaSequence === null || !segments.length) return renderSnapshot(text);
+
+  // Re-emit the header whenever it changes, so a TARGETDURATION change or a
+  // new KEY appears in the timeline instead of silently replacing what was
+  // on screen. MEDIA-SEQUENCE is excluded from the comparison because it
+  // changes every poll by design.
+  const headerKey = headerLines.filter((l) => !/^#EXT-X-MEDIA-SEQUENCE:/.test(l)).join("\n");
+  if (headerKey !== lastHeaderKey) {
+    const changed = lastHeaderKey !== null;
+    const banner = changed ? escapeHtml(`${ts()}  — playlist header changed —`) + "\n" : "";
+    appendHtml(outputEl, banner + headerLines.map(linkifyTagLine).join("\n"));
+    lastHeaderKey = headerKey;
+  }
+
+  // A sequence going BACKWARDS means the packager restarted or we failed over
+  // to an origin numbering independently. Everything logged so far belongs to
+  // a different numbering, so note the break and start again rather than
+  // silently dropping every segment below the old high-water mark.
+  if (highestSeqLogged !== null && segments[0].seq < highestSeqLogged - segments.length) {
+    appendHtml(outputEl, escapeHtml(`${ts()}  — sequence restarted (was ${highestSeqLogged}, now ${segments[0].seq}) —`));
+    highestSeqLogged = null;
+  }
+
+  const fresh = segments.filter((seg) => highestSeqLogged === null || seg.seq > highestSeqLogged);
+  if (!fresh.length) return;
+  const html = fresh
+    .map((seg) =>
+      seg.lines
+        .map((l, i) =>
+          i === seg.lines.length - 1
+            ? `${String(seg.seq).padStart(8)}  ${linkifyTagLine(l)}`
+            : `          ${linkifyTagLine(l)}`
+        )
+        .join("\n")
+    )
+    .join("\n");
+  appendHtml(outputEl, html);
+  highestSeqLogged = fresh[fresh.length - 1].seq;
+  loggedSegmentCount += fresh.length;
+}
+
+function render(text) {
+  if (currentFormat === "hls" && /#EXTINF/.test(text)) renderAccumulating(text);
+  else renderSnapshot(text);
   updateScteCues(text);
 }
 
@@ -393,6 +469,11 @@ function watch(url, stillLive) {
 }
 
 function watchTarget(url, stillLive) {
+  // A new target numbers its segments independently, so the log starts over.
+  outputEl.innerHTML = "";
+  highestSeqLogged = null;
+  lastHeaderKey = null;
+  loggedSegmentCount = 0;
   watchedPlaylistUrl = url;
   watchedPlaylistText = null;
   tsScanBtn.disabled = true;

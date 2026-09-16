@@ -7,6 +7,7 @@ import {
   extractTargetDuration,
   detectSequenceGap,
   compareMediaSequence,
+  splitMediaPlaylist,
   findDiscontinuities,
   isPlaylistStale,
 } from "../../public/scte35.js";
@@ -215,5 +216,70 @@ describe("isPlaylistStale", () => {
   });
   test("no target duration means we can't judge staleness", () => {
     assert.equal(isPlaylistStale(30_000, 0, null), false);
+  });
+});
+
+describe("splitMediaPlaylist", () => {
+  const pl = (seq, extra = []) =>
+    ["#EXTM3U", "#EXT-X-VERSION:3", `#EXT-X-MEDIA-SEQUENCE:${seq}`, "#EXT-X-TARGETDURATION:6", ...extra].join("\n");
+
+  test("separates playlist-level header from numbered segments", () => {
+    const r = splitMediaPlaylist(pl(100, ["#EXTINF:6.006,", "a.ts", "#EXTINF:6.006,", "b.ts"]));
+    assert.equal(r.mediaSequence, 100);
+    assert.deepEqual(r.headerLines, ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-MEDIA-SEQUENCE:100", "#EXT-X-TARGETDURATION:6"]);
+    assert.deepEqual(r.segments.map((s) => s.seq), [100, 101]);
+  });
+
+  test("PROGRAM-DATE-TIME travels with its segment, not the header", () => {
+    // It sits before the first #EXTINF and looks like a header line, but it
+    // timestamps the NEXT segment and so changes on every poll as the window
+    // slides. Classifying it as header makes the header look like it changes
+    // constantly, which floods an accumulating log with false banners.
+    const r = splitMediaPlaylist(pl(100, ["#EXT-X-PROGRAM-DATE-TIME:2026-09-16T10:00:00.000Z", "#EXTINF:6.006,", "a.ts"]));
+    assert.ok(!r.headerLines.some((l) => /PROGRAM-DATE-TIME/.test(l)), "must not be header");
+    assert.ok(r.segments[0].lines.some((l) => /PROGRAM-DATE-TIME/.test(l)), "must ride with the segment");
+  });
+
+  test("the header is stable across polls while the window slides", () => {
+    const a = splitMediaPlaylist(pl(100, ["#EXT-X-PROGRAM-DATE-TIME:2026-09-16T10:00:00.000Z", "#EXTINF:6.006,", "a.ts"]));
+    const b = splitMediaPlaylist(pl(101, ["#EXT-X-PROGRAM-DATE-TIME:2026-09-16T10:00:06.006Z", "#EXTINF:6.006,", "b.ts"]));
+    const strip = (h) => h.filter((l) => !/^#EXT-X-MEDIA-SEQUENCE:/.test(l));
+    assert.deepEqual(strip(a.headerLines), strip(b.headerLines), "only MEDIA-SEQUENCE should differ");
+  });
+
+  test("segment-level tags stay attached to the segment they describe", () => {
+    const r = splitMediaPlaylist(
+      pl(100, ["#EXTINF:6.006,", "a.ts", "#EXT-X-DISCONTINUITY", "#EXT-X-CUE-OUT:30.0", "#EXTINF:6.006,", "b.ts"])
+    );
+    assert.deepEqual(r.segments[0].lines, ["#EXTINF:6.006,", "a.ts"]);
+    assert.deepEqual(r.segments[1].lines, ["#EXT-X-DISCONTINUITY", "#EXT-X-CUE-OUT:30.0", "#EXTINF:6.006,", "b.ts"]);
+  });
+
+  test("sequence numbers let a caller dedupe across polls", () => {
+    // Two overlapping windows: the shared segments must carry identical
+    // numbers, which is what makes "have I logged this already" answerable.
+    const a = splitMediaPlaylist(pl(100, ["#EXTINF:6,", "a.ts", "#EXTINF:6,", "b.ts", "#EXTINF:6,", "c.ts"]));
+    const b = splitMediaPlaylist(pl(101, ["#EXTINF:6,", "b.ts", "#EXTINF:6,", "c.ts", "#EXTINF:6,", "d.ts"]));
+    assert.deepEqual(a.segments.map((s) => s.seq), [100, 101, 102]);
+    assert.deepEqual(b.segments.map((s) => s.seq), [101, 102, 103]);
+    const fresh = b.segments.filter((s) => s.seq > a.segments[a.segments.length - 1].seq);
+    assert.deepEqual(fresh.map((s) => s.lines.at(-1)), ["d.ts"], "only the genuinely new segment");
+  });
+
+  test("a playlist with no MEDIA-SEQUENCE reports null rather than assuming 0", () => {
+    const r = splitMediaPlaylist("#EXTM3U\n#EXTINF:6,\na.ts\n");
+    assert.equal(r.mediaSequence, null, "caller must be able to tell this is not accumulable");
+  });
+
+  test("trailing #EXT-X-ENDLIST doesn't invent a segment", () => {
+    const r = splitMediaPlaylist(pl(100, ["#EXTINF:6,", "a.ts", "#EXT-X-ENDLIST"]));
+    assert.equal(r.segments.length, 1);
+    assert.ok(r.headerLines.includes("#EXT-X-ENDLIST"));
+  });
+
+  test("an empty playlist yields nothing rather than throwing", () => {
+    const r = splitMediaPlaylist("");
+    assert.deepEqual(r.segments, []);
+    assert.equal(r.mediaSequence, null);
   });
 });

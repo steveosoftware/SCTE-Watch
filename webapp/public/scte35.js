@@ -444,6 +444,74 @@ export function compareMediaSequence(prevText, currText) {
 // case read better for it. Returns null unless segments were genuinely
 // skipped — note a "rewound" playlist is NOT a gap and returns null here,
 // which is exactly why compareMediaSequence exists alongside it.
+// Splits a media playlist into its header and its individual segments, with
+// each segment numbered from #EXT-X-MEDIA-SEQUENCE and carrying whatever tag
+// lines preceded it (#EXTINF, #EXT-X-PROGRAM-DATE-TIME, #EXT-X-DISCONTINUITY,
+// cue tags, #EXT-X-KEY, #EXT-X-BYTERANGE...).
+//
+// Exists so the Manifest Inspector can keep a running log of everything that
+// has aired this session rather than only the ~10 segments a live playlist
+// happens to hold right now. The sequence number is what makes that possible:
+// it gives each segment a stable identity across polls, so "have I already
+// logged this one" is answerable without comparing text.
+//
+// Tag lines travel WITH their segment rather than being dropped, because
+// they are usually the interesting part — a discontinuity or a cue tag is
+// exactly what you scroll back to find, and it is meaningless detached from
+// the segment it applies to.
+//
+// Returns {headerLines, segments:[{seq, lines}], mediaSequence}. A playlist
+// with no #EXT-X-MEDIA-SEQUENCE (a master, or a malformed media playlist)
+// yields mediaSequence null and segments numbered from 0, which the caller
+// should treat as "not accumulable" rather than as sequence 0.
+// Tags that apply to the Media Segment following them (RFC 8216 s4.3.2),
+// as opposed to playlist-level tags like TARGETDURATION or MEDIA-SEQUENCE.
+const SEGMENT_TAG_RE =
+  /^#(EXTINF|EXT-X-BYTERANGE|EXT-X-DISCONTINUITY|EXT-X-KEY|EXT-X-MAP|EXT-X-PROGRAM-DATE-TIME|EXT-X-DATERANGE|EXT-X-CUE|EXT-X-SCTE35|EXT-OATCLS-SCTE35|EXT-X-ASSET|EXT-X-GAP|EXT-X-BITRATE)\b/i;
+
+export function splitMediaPlaylist(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const mediaSequence = extractMediaSequence(text);
+  const headerLines = [];
+  const segments = [];
+  let pending = [];
+  let seenFirstSegmentTag = false;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) {
+      // Media Segment Tags apply to the segment that FOLLOWS them, so they
+      // travel with it. Everything else is playlist-level header.
+      //
+      // #EXT-X-PROGRAM-DATE-TIME is the one that catches people out: it sits
+      // before the first #EXTINF and looks like a header line, but it
+      // timestamps the next segment and therefore changes on every poll as
+      // the window slides. Treating it as header makes the header appear to
+      // change constantly.
+      if (SEGMENT_TAG_RE.test(line)) {
+        seenFirstSegmentTag = true;
+        pending.push(line);
+      } else if (seenFirstSegmentTag) {
+        pending.push(line);
+      } else {
+        headerLines.push(line);
+      }
+      continue;
+    }
+    // A bare line is a segment URI, closing whatever tags preceded it.
+    segments.push({
+      seq: mediaSequence === null ? segments.length : mediaSequence + segments.length,
+      lines: [...pending, line],
+    });
+    pending = [];
+  }
+  // Trailing tags with no segment after them (#EXT-X-ENDLIST and friends).
+  if (pending.length) headerLines.push(...pending);
+
+  return { headerLines, segments, mediaSequence };
+}
+
 export function detectSequenceGap(prevText, currText) {
   if (prevText === null || prevText === undefined) return null;
   const r = compareMediaSequence(prevText, currText);

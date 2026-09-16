@@ -434,11 +434,42 @@ Two details worth recording. The at-bottom test carries a 4px tolerance because 
 
 Not converted: the EPG drift log and the Stream Tester log still jump. Extending means promoting the helper out of `manifest-inspector.js` into a shared module.
 
+
+### Variant log accumulates — 2026-09-16
+
+Operator was watching the variant log and found only ever ~10 segments in it. Not a bug so much as the wrong design: the box showed the *current playlist*, and a live playlist only holds its window — about a minute of air — so anything that had rolled off was gone with no way to look back at it.
+
+Now append-only, keyed on `#EXT-X-MEDIA-SEQUENCE`. New `splitMediaPlaylist()` in `scte35.js` splits a playlist into header plus numbered segments, each carrying the segment-level tags that preceded it, so a caller can ask "have I logged this one" without comparing text. Tags travel with their segment on purpose — a discontinuity or a cue tag is exactly what you scroll back to find, and it says nothing detached from the segment it applies to.
+
+**The trap, and it made the first attempt unusable:** `#EXT-X-PROGRAM-DATE-TIME` sits before the first `#EXTINF` and looks like a header line, but it timestamps the *next* segment, so it changes on every poll as the window slides. Classifying it as header made the log print `— playlist header changed —` every few seconds, burying the actual content. The fix is to classify by RFC 8216 §4.3.2's Media Segment Tags (`SEGMENT_TAG_RE`) rather than by position relative to the first `#EXTINF`.
+
+Three smaller decisions recorded: switching variants clears the log, because a different variant numbers its segments independently and interleaving them would be meaningless. A backwards sequence prints `— sequence restarted —` and begins a fresh run, rather than silently discarding every segment below the old high-water mark. And masters and DASH MPDs keep replace-on-change — they're single documents that get rewritten, not appended to, so there is nothing to accumulate.
+
+Also fixed while here: **all four log boxes appended with `innerHTML +=`**, which re-serializes the entire element on every call — O(n²), fine for a box that gets replaced, visibly stalling for one that grows all session. Now `insertAdjacentHTML`.
+
+Side benefit: the scroll-position fix from 2026-09-11 carried a caveat that a restored `scrollTop` kept the viewport steady while the *lines* drifted by a segment per poll, because the box was being replaced. Append-only removes that entirely — content only grows at the bottom, so the lines under the reader don't move. The e2e test now asserts exact `scrollTop` equality across polls.
+
+**Cost**: the current playlist is no longer visible as a coherent snapshot, which was useful for eyeballing `TARGETDURATION` or counting the window. Would need a toggle to get back; not built.
+
+### Stream URL history — not ours, and not reliable — 2026-09-16
+
+Operator asked to widen the dropdown of previously-used stream URLs, then noticed entries don't survive a refresh. Worth recording because the obvious assumption is wrong twice over.
+
+**The app has never saved URLs.** The only `localStorage` entries are the two Gracenote key ones. That dropdown is the browser's native autofill, stored in the browser profile.
+
+**It can't be styled, and its width is always exactly the input's width.** So the only lever on "show more of the URL" is the input itself. Briefly moved the URL to its own row (69% → 91% of panel width at 1440px, +50% at 1100px), then reverted at the operator's request — buttons back to the right of the input, since a matched dropdown at `flex: 1` width was good enough and the single row reads better.
+
+**And it's unreliable because the page has no `<form>`.** Browsers record autofill values on form submission; "Load & Play" is a plain click handler, so there is no submit event to hang a save on, and what gets remembered comes down to browser heuristics.
+
+**Open**: app-owned URL history in `localStorage` would fix it properly — push on load, cap ~10-15, dedupe, most-recent-first, offered back via a `<datalist>` (cheap, still browser-drawn and same width limits) or a custom dropdown (full control, middle-ellipsis so both host and differing tail stay visible). Undecided mainly on one point: some playback URLs carry session tokens in the path, so remembered entries expire and can be dead on arrival, and storing them puts a token in `localStorage` — the same trade already written up for the Gracenote key.
+
 ---
 
 ## Hygiene backlog
 
 - **Lambda redeploy pending (2026-09-11).** `/api/segment-scan` is in the repo but not in production — the deployed Lambda is behind. Two steps: `aws lambda update-function-code` with a zip that **now also contains `public/tsanalyze.js`** (omitting it throws `ERR_MODULE_NOT_FOUND` on cold start and takes `/api/fetch` and `/api/dns-chain` down with it, since they share `api-handlers.js`), and `aws apigatewayv2 create-route` for `GET /api/segment-scan`, since the HTTP API only forwards routes it knows. Full detail in CONTEXT.md's Hosting section. **Deliberately not urgent**: the segment scan fetches segments directly from the browser, so it already works live — this only adds the CORS fallback for origins that refuse cross-origin reads. Smoke-test all three endpoints afterwards, including the two that already work.
+- **App-owned stream URL history.** The dropdown of previous URLs is browser autofill, not ours, and it doesn't reliably survive a refresh because the page has no `<form>` for the browser to record on. Storing recent URLs in `localStorage` ourselves would fix it. Open question before building: playback URLs carrying session tokens expire (a remembered entry is dead on arrival) and would put a token in `localStorage`. See the dated entry below.
+- **No snapshot view of the current playlist.** The variant log accumulates as of 2026-09-16, which lost the ability to read the current playlist as one document (`TARGETDURATION`, window size). A toggle would restore it.
 - **Log scroll fix not applied everywhere.** `preservingScroll()` lives in `manifest-inspector.js` and covers the variant and SCTE logs. The EPG drift log (`epg-ui.js`) and Stream Tester log (`stream-tester.js`) still jump to the newest line on every update. Extending means promoting the helper into a shared module — the behaviour and its 4px-tolerance reasoning are already written up in CONTEXT.md.
 - **No README at repo root.** Public repo with an empty landing page; `CONTEXT.md`/`ROADMAP.md` live inside `webapp/`. Needs at least a description, screenshot, and run instructions.
 - **Floating CDN dependencies, no SRI.** `index.html` loads `hls.js@1` and `dashjs@4` — floating major versions, no `integrity` attributes. A CDN-side update can change behavior with zero commits on our side, which directly undermines regression testing (tests break with no code change). Pin exact versions + add SRI hashes, or vendor locally. See Open decisions above.
