@@ -1,0 +1,23 @@
+# Amplify Hosting build settings.
+#
+# Lives in the repo rather than only in the Amplify console, because the
+# console version is per-branch: `roadmap` carried a branch-level override
+# setting baseDirectory correctly while `main` had none, so main fell back to
+# the app-level default (baseDirectory: /), deployed the repo root, and served
+# 404 — there is no index.html there. A file in git applies to every branch,
+# survives a branch being deleted and recreated, and is reviewable.
+#
+# There is nothing to build: webapp/public is plain HTML and ES modules with
+# no bundler, and hls.js/dash.js load from a CDN via <script> tags. So the
+# "build" is a straight copy of that directory.
+version: 1
+frontend:
+  phases:
+    build:
+      commands: []
+  artifacts:
+    baseDirectory: webapp/public
+    files:
+      - '**/*'
+  cache:
+    paths: []
