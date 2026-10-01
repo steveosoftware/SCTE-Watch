@@ -724,6 +724,36 @@ describe("offline / deterministic", () => {
     await page.close();
   });
 
+  test("segment scan finds and decodes an in-band SCTE-35 cue, collapsing its repeats", async () => {
+    // Segments 1 and 2 carry the same splice_insert on the PMT's 0x86 PID;
+    // segment 3 declares the PID but is silent. The fixture server sends
+    // no CORS headers, so this also exercises the /api/segment-scan
+    // fallback — the path where the analysis crosses the wire as JSON.
+    const { page } = await newPage();
+    await page.goto(BASE_URL);
+    await page.fill("#tester-url", `http://127.0.0.1:${FIXTURE_SERVER_PORT}/hls-media-inband-scte35.m3u8`);
+    await page.selectOption("#tester-format", "hls");
+    await page.click("#tester-load");
+
+    await page.waitForFunction(() => !document.getElementById("ts-scan-btn").disabled, { timeout: 10000 });
+    await page.fill("#ts-scan-count", "3");
+    await page.click("#ts-scan-btn");
+    await page.waitForFunction(() => /Scanned|failed/.test(document.getElementById("ts-scan-status").textContent), { timeout: 10000 });
+
+    const status = await page.textContent("#ts-scan-status");
+    assert.match(status, /1 in-band SCTE-35 cue/);
+    const out = await page.textContent("#ts-scan-output");
+    assert.match(out, /in-band SCTE-35 \(PID 0x01f0\)/);
+    assert.match(out, /\*\* CUE \*\* in seg 1, 2, sent 2x/, "two copies of one cue must read as one cue, not two breaks");
+    assert.match(out, /splice_insert.*event=0x4800008F/);
+    assert.match(out, /splice at  : PTS 21514\.559s/);
+    assert.ok(!/CRC_32 does not verify/.test(out), "this fixture's CRC is valid");
+    // The decoded command is glossary-linked, same as the manifest cue log.
+    assert.ok(await page.$('#ts-scan-output .glossary-term[data-term="splice_insert"]'));
+
+    await page.close();
+  });
+
   test("a media playlist loaded directly keeps polling instead of freezing on one snapshot", async () => {
     const { page } = await newPage();
     // Regression: this path used to pass a hardcoded `() => false` liveness

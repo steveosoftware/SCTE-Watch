@@ -188,7 +188,196 @@ export function analyzeTsSegment(bytes) {
       }
     }
   }
+
+  // In-band SCTE-35: a second pass over just the PIDs the PMT declared as
+  // stream_type 0x86. A separate pass rather than folded into the loop
+  // above so a cue packet that precedes the PMT in the segment is still
+  // read — the PID is only known once the PMT has been seen.
+  result.scte35 = null;
+  if (result.pmt) {
+    const pids = result.pmt.streams.filter((s) => s.streamType === SCTE35_STREAM_TYPE).map((s) => s.pid);
+    if (pids.length) {
+      result.scte35 = { pids, sections: [], incomplete: 0, crcErrors: 0 };
+      for (const pid of pids) {
+        const r = extractSections(b, pid);
+        result.scte35.sections.push(...r.sections.filter((x) => x.tableId === SCTE35_TABLE_ID));
+        result.scte35.incomplete += r.incomplete;
+        result.scte35.crcErrors += r.crcErrors;
+      }
+      result.scte35.sections.sort((x, y) => x.packetIndex - y.packetIndex);
+    }
+  }
   return result;
+}
+
+// ---------------------------------------------------------------------
+// PSI section reassembly — what in-band SCTE-35 actually needs.
+//
+// SCTE-35 in a transport stream is SECTION-carried, like the PAT and PMT,
+// not PES-carried like video and audio. That is why this is ~a page of code
+// rather than a demuxer: no PES headers, no PTS reassembly, just
+//
+//   pointer_field (PUSI packets only) — bytes until the next section starts;
+//                                       anything before that point is the
+//                                       TAIL of the previous section
+//   table_id                          — 0xFC for splice_info_section
+//   section_length (12 bits)          — bytes remaining after this field
+//   ... section body ..., CRC_32
+//
+// A splice_info_section is nearly always under 184 bytes and so sits whole
+// inside one packet, but nothing in the standard guarantees that, and a
+// section that spans packets is reassembled here rather than silently lost.
+// ---------------------------------------------------------------------
+
+export const SCTE35_STREAM_TYPE = 0x86;
+export const SCTE35_TABLE_ID = 0xfc;
+
+// CRC-32/MPEG-2: polynomial 0x04C11DB7, init 0xFFFFFFFF, no reflection, no
+// final XOR. Run over a whole section INCLUDING its trailing CRC the result
+// is 0, which is the check. Table built lazily — the analyzer is often
+// used without ever meeting a section.
+let crcTable = null;
+export function crc32Mpeg2(b, start = 0, end = b.length) {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i << 24;
+      for (let k = 0; k < 8; k++) c = c & 0x80000000 ? (c << 1) ^ 0x04c11db7 : c << 1;
+      crcTable[i] = c >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (let i = start; i < end; i++) crc = ((crc << 8) ^ crcTable[((crc >>> 24) ^ b[i]) & 0xff]) >>> 0;
+  return crc >>> 0;
+}
+
+function toHex(b) {
+  let s = "";
+  for (const x of b) s += x.toString(16).padStart(2, "0");
+  return s;
+}
+
+// Reassembles every complete PSI section carried on one PID.
+//
+// Returns sections as HEX rather than byte arrays on purpose: this module
+// also runs server-side behind /api/segment-scan, and its result crosses
+// the wire as JSON, where a Uint8Array serializes as {"0":252,"1":48,...}.
+// Hex survives the trip and scte35.js's bytesFromHex() reads it back.
+//
+// `packetIndex` is the packet the section STARTED in — the order of cues
+// within a segment, and a stable key for telling repeats apart.
+//
+// A section is abandoned rather than stitched across a continuity break:
+// bytes from either side of lost packets would join into something that
+// parses but isn't what was sent. `incomplete` counts those, plus any
+// section still open when the segment ends (one split across a segment
+// boundary — legal, rare, and unrecoverable from a single segment).
+export function extractSections(bytes, pid) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const sections = [];
+  let incomplete = 0;
+  let crcErrors = 0;
+  let pending = null; // { bytes: number[], packetIndex }
+  let lastCc = null;
+
+  // Emits every complete section at the head of `pending`; leaves a
+  // partial one in place. 0xFF where a table_id should be is stuffing —
+  // the rest of the packet is padding, not another section.
+  const drain = () => {
+    while (pending && pending.bytes.length >= 3) {
+      const pb = pending.bytes;
+      if (pb[0] === 0xff) {
+        pending = null;
+        return;
+      }
+      const total = 3 + (((pb[1] & 0x0f) << 8) | pb[2]);
+      if (pb.length < total) return;
+      const sec = Uint8Array.from(pb.slice(0, total));
+      // Sections without section_syntax_indicator may omit the CRC, but
+      // splice_info_section always carries one, as do PAT and PMT.
+      const crcOk = total >= 7 ? crc32Mpeg2(sec, 0, total) === 0 : false;
+      if (!crcOk) crcErrors += 1;
+      sections.push({ tableId: sec[0], packetIndex: pending.packetIndex, length: total, crcOk, hex: toHex(sec) });
+      const rest = pb.slice(total);
+      pending = rest.length ? { bytes: rest, packetIndex: pending.packetIndex } : null;
+    }
+  };
+
+  for (let off = 0, idx = 0; off + TS_PACKET_SIZE <= b.length; off += TS_PACKET_SIZE, idx++) {
+    if (b[off] !== SYNC_BYTE) continue;
+    if ((((b[off + 1] & 0x1f) << 8) | b[off + 2]) !== pid) continue;
+    const pusi = (b[off + 1] & 0x40) !== 0;
+    const afc = (b[off + 3] & 0x30) >> 4;
+    const cc = b[off + 3] & 0x0f;
+    if (afc === 0 || afc === 2) continue; // no payload; CC doesn't advance either
+
+    // Same rules as the integrity scan: a repeated CC is a legal duplicate
+    // packet (drop it — its bytes are already in `pending`), anything else
+    // out of order means packets went missing.
+    if (lastCc !== null) {
+      if (cc === lastCc) continue;
+      if (cc !== ((lastCc + 1) & 0x0f) && pending) {
+        incomplete += 1;
+        pending = null;
+      }
+    }
+    lastCc = cc;
+
+    let p = off + 4;
+    if (afc === 3) p += b[p] + 1;
+    const end = off + TS_PACKET_SIZE;
+    if (p >= end) continue;
+
+    if (pusi) {
+      const pointer = b[p];
+      const tailEnd = Math.min(p + 1 + pointer, end);
+      if (pending) {
+        for (let i = p + 1; i < tailEnd; i++) pending.bytes.push(b[i]);
+        drain();
+        // Whatever the pointer_field skipped should have finished the old
+        // section exactly. If it's still open, its length lied.
+        if (pending) {
+          incomplete += 1;
+          pending = null;
+        }
+      }
+      pending = { bytes: Array.from(b.subarray(tailEnd, end)), packetIndex: idx };
+    } else if (pending) {
+      for (let i = p; i < end; i++) pending.bytes.push(b[i]);
+    }
+    // A non-PUSI packet with nothing pending is the middle of a section
+    // that began before this segment did — nothing to attach it to.
+    drain();
+  }
+  if (pending) incomplete += 1;
+  return { sections, incomplete, crcErrors };
+}
+
+// Collapses the sections from a multi-segment scan into distinct cues.
+//
+// Packagers repeat a splice_info_section several times ahead of the splice
+// point so a player joining late still sees it, which means the same cue
+// appears in consecutive segments and often several times in one. Listing
+// every copy would read as a burst of separate breaks. Identical bytes are
+// one cue; `occurrences` and `segments` say where it was seen.
+//
+// Keyed on the full section, so a cue re-sent with a changed field (a
+// splice_insert later cancelled, a pts_adjustment that moved) is correctly
+// reported as distinct.
+export function groupScte35Sections(scans) {
+  const byHex = new Map();
+  scans.forEach((scan, segIdx) => {
+    for (const s of scan?.scte35?.sections ?? []) {
+      let g = byHex.get(s.hex);
+      if (!g) {
+        g = { hex: s.hex, crcOk: s.crcOk, occurrences: 0, segments: [] };
+        byHex.set(s.hex, g);
+      }
+      g.occurrences += 1;
+      if (!g.segments.includes(segIdx)) g.segments.push(segIdx);
+    }
+  });
+  return [...byHex.values()];
 }
 
 // Compares the continuity counters of two CONSECUTIVE segments.

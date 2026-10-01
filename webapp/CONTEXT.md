@@ -10,7 +10,9 @@ Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (
 
 **As of 2026-08-28 `staging` and `roadmap` are identical** (`df52d77`) — staging was 21 commits behind and fast-forwarded, no divergence, nothing lost. Working tree clean and fully pushed. `main` is untouched and still a single commit; nothing deploys from it.
 
-Latest work on `roadmap` (2026-09-16): the Manifest Inspector's variant log now accumulates every segment for the whole session instead of redrawing the ~10-segment live window, and `splitMediaPlaylist()` was added to `scte35.js` to key that on media sequence.
+Latest work (2026-10-01, branch `inband-scte35`, not yet merged or pushed): **in-band SCTE-35 detection** — the segment scan now reassembles splice_info_sections from the PMT's `stream_type 0x86` PID and decodes them with the same `decodeScte35()` the manifest log uses. On demand only, via the existing Scan segments button. See ROADMAP.md Phase 4.
+
+Before that (2026-09-16): the Manifest Inspector's variant log now accumulates every segment for the whole session instead of redrawing the ~10-segment live window, and `splitMediaPlaylist()` was added to `scte35.js` to key that on media sequence.
 
 Before that (2026-09-11): a segment byte scan in the Manifest Inspector (real TS packets — continuity counters, TEI, PMT/in-band-SCTE-35 detection, fetched client-side to avoid Lambda egress), and log boxes that no longer steal your scroll position mid-read.
 
@@ -68,11 +70,11 @@ Running the app itself still needs no `npm install` — `server.js` uses only No
 **Running the tests DOES need `npm install`** (adds Playwright as a devDependency, for the e2e suite only — the app's own runtime dependency count is still zero). Then:
 
 ```bash
-npm test            # unit tests (fast, no browser, no network) — 349 passing
-npm run test:e2e     # e2e — needs `npx playwright install chromium` once first — 29 passing
+npm test            # unit tests (fast, no browser, no network) — 375 passing
+npm run test:e2e     # e2e — needs `npx playwright install chromium` once first — 30 tests
 ```
 
-Counts are as of 2026-09-16. The e2e suite's last three tests hit real public streams and can fail on a CDN outage without anything being wrong here — see ROADMAP.md Phase 0.
+Counts are as of 2026-10-01 (the offline e2e tier — 27 — was run then; the live-network three were not). The e2e suite's last three tests hit real public streams and can fail on a CDN outage without anything being wrong here — see ROADMAP.md Phase 0.
 
 See ROADMAP.md Phase 0 for what each suite covers.
 
@@ -137,8 +139,10 @@ Order matters and is deliberate: the EPG panel sits **above** the VAST/VMAP one 
 - **SCTE-35 cues sub-panel**: works for **both HLS and DASH** now.
   - HLS: scans cue tag lines (`CUE_PATTERN`), decodes any payload found, appends a timestamped entry — deduped by `#EXT-X-MEDIA-SEQUENCE`. Each cue's wall-clock time is shown too (`findCueWallclocks()` — authoritative from `#EXT-X-DATERANGE`'s `START-DATE` when present, otherwise interpolated from `#EXT-X-PROGRAM-DATE-TIME` + accumulated `#EXTINF`).
   - DASH: scans `<EventStream>`/`<Event>` (`findDashScte35Events()`), deduped by a fingerprint of event ids+times. The `xml+bin` encoding (`<Signal><Binary>`) decodes through the same `decodeScte35()` as HLS, unchanged. Pure-XML-encoded signals are explicitly flagged "not yet decoded" rather than silently dropped.
-- **Only detects out-of-band SCTE-35** (cues signaled in the manifest text itself) — not in-band cues muxed into the actual transport stream/segments, which would require demuxing the media (this tool never does, yet — see ROADMAP.md Phase 4). There's a note to this effect in the UI, with both terms linked to glossary definitions.
+- **The cue log watches out-of-band SCTE-35 only** (cues signaled in the manifest text itself). **In-band cues** (muxed into the TS segments) are read on demand by the segment scan — see below — not continuously, since that means downloading every segment. The UI note under the cue log says so, with both terms glossary-linked.
 - **Segment byte scan** (added 2026-09-11): a **Scan segments** button downloads 2–6 real segments and reports what no manifest can — `transport_error_indicator`, sync-byte loss, 188-byte alignment, continuity counters within each segment, and continuity *across* the joins. Also prints the PMT, so it says whether a stream carries in-band SCTE-35 (`stream_type 0x86`) rather than leaving that unknown. Logic in `public/tsanalyze.js`.
+  - **In-band SCTE-35** (added 2026-10-01): when the PMT declares a `0x86` PID, `extractSections()` reassembles PSI sections on it (pointer_field, multi-packet, duplicate packets, CC breaks, 0xFF stuffing), and `groupScte35Sections()` collapses the repeats packagers send ahead of a splice point into one cue with the segments it appeared in. Decoded in the inspector with `decodeScte35()`, glossary-linked, plus PTS and base64. Sections travel as **hex**, because the proxy fallback sends the analysis as JSON and a `Uint8Array` doesn't survive that. `tsanalyze.js` deliberately does not import `scte35.js`, so the Lambda zip list doesn't grow.
+  - **CRC_32 is checked but a failure is flagged, not dropped.** The "real captured" `splice_insert_basic` payload in `scte35-payloads.json` **fails CRC-32/MPEG-2** (the routine matches the standard check value; no single-byte edit repairs the payload). Either the capture was altered or that packager writes bad CRCs. If the latter, strict players discard those cues — worth checking against the source channel.
   - **Fetched DIRECTLY from the browser**, with `/api/segment-scan` only as a CORS fallback. Segments are megabytes, and routing them through the Lambda would be egress in *and* out on every click — the surprise-bill risk ROADMAP flags for in-band SCTE-35. The Stream Tester already pulls segments straight from the browser (hls.js has to), so any stream that plays here has segments the browser can read. The output names which path was used.
   - **User-triggered only, never on the poll loop**, count capped at 6, and it inherits the Inspector's lowest-bandwidth-variant default — three 144p segments is ~0.6MB, not 9MB.
   - **`reset` and `jump` are deliberately separate verdicts.** A counter restarting at 0 each segment is packager configuration, harmless to players that decode segments independently, and the usual cause of ffmpeg reporting `Packet corrupt` once per segment on a perfectly healthy stream. A jump has the shape of real loss. Collapsing them sends an operator hunting an encoder fault that doesn't exist. A reset is also *indistinguishable* from continuous when the previous segment ends at CC 15 (1-in-16), which the UI flags rather than reporting a clean boundary that only looks clean.

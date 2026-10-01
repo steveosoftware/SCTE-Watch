@@ -14,6 +14,7 @@ import {
   findCueWallclocks,
   findDashScte35Events,
   bytesFromBase64,
+  bytesFromHex,
   extractMediaSequence,
   extractTargetDuration,
   detectSequenceGap,
@@ -27,7 +28,7 @@ import {
   summarizeDrm,
 } from "./scte35.js";
 import { escapeHtml, linkifyTagLine } from "./glossary.js";
-import { analyzeTsSegment, compareSegmentBoundary } from "./tsanalyze.js";
+import { analyzeTsSegment, compareSegmentBoundary, groupScte35Sections } from "./tsanalyze.js";
 import { buildCdnChain } from "./cdn-fingerprint.js";
 
 const $ = (id) => document.getElementById(id);
@@ -619,7 +620,64 @@ function segmentUris(playlistText, playlistUrl) {
 }
 
 function tsLine(text, cls) {
-  tsScanOutput.innerHTML += (tsScanOutput.textContent ? "\n" : "") + (cls ? `<span class="${cls}">${escapeHtml(text)}</span>` : escapeHtml(text));
+  tsHtml(cls ? `<span class="${cls}">${escapeHtml(text)}</span>` : escapeHtml(text));
+}
+
+// For lines that are already HTML — formatDecoded()'s glossary-linked output.
+function tsHtml(html) {
+  tsScanOutput.innerHTML += (tsScanOutput.textContent ? "\n" : "") + html;
+}
+
+const pidHex = (pid) => `0x${pid.toString(16).padStart(4, "0")}`;
+
+// In-band SCTE-35 cues found in the scanned segments, decoded with the
+// same decodeScte35() the manifest cue log uses — the section bytes in the
+// stream are the same bytes a packager base64-encodes into a manifest tag.
+//
+// Riding on this button rather than the poll loop is the cost decision
+// from ROADMAP.md: an out-of-band cue lives in a 727-byte playlist, an
+// in-band one in a multi-megabyte segment. Watching continuously is still
+// an open question; looking on demand is free until pressed.
+function reportInbandScte35(scans) {
+  const first = scans[0];
+  if (!first.pmt) return;
+  if (first.scte35 === undefined) {
+    // An older analyzer behind the /api/segment-scan fallback.
+    tsLine("     in-band SCTE-35 not checked — the server proxy predates in-band support", "line-muted");
+    return;
+  }
+  if (!first.scte35) {
+    tsLine("     no stream_type 0x86 — this stream carries no in-band SCTE-35", "line-muted");
+    return;
+  }
+
+  tsLine("");
+  tsLine(`in-band SCTE-35 (PID ${first.scte35.pids.map(pidHex).join(", ")}):`);
+  const cues = groupScte35Sections(scans);
+  let incomplete = 0;
+  for (const s of scans) incomplete += s.scte35?.incomplete ?? 0;
+
+  if (!cues.length) {
+    tsLine(`   none in these ${scans.length} segments — the PID is declared, so cues will appear here during a break`, "line-muted");
+  }
+  for (const c of cues) {
+    const where = c.segments.map((i) => i + 1).join(", ");
+    const repeats = c.occurrences > 1 ? `, sent ${c.occurrences}x` : "";
+    tsLine(`   ** CUE ** in seg ${where}${repeats}`, "line-ok");
+    const bytes = bytesFromHex(c.hex);
+    const info = decodeScte35(bytes);
+    for (const dline of formatDecoded(info, "     ")) tsHtml(dline);
+    if (info.pts_time_s) tsLine(`       splice at  : PTS ${info.pts_time_s}`);
+    tsLine(`       base64     : ${btoa(String.fromCharCode(...bytes))}`, "line-muted");
+    if (!c.crcOk) {
+      // Flagged, not dropped: a packager that writes bad CRCs still means
+      // the cue was sent, and a strict player may be ignoring it.
+      tsLine("       CRC_32 does not verify — a strict decoder would discard this cue", "line-bad");
+    }
+  }
+  if (incomplete) {
+    tsLine(`   (${incomplete} section(s) cut off by a segment edge or lost packets — not decodable from this scan)`, "line-muted");
+  }
 }
 
 async function runSegmentScan() {
@@ -655,10 +713,8 @@ async function runSegmentScan() {
     if (first.pmt) {
       const streams = first.pmt.streams.map((x) => `0x${x.pid.toString(16).padStart(4, "0")} ${x.name}`);
       tsLine(`PMT: ${streams.join("   ")}`);
-      if (!first.pmt.streams.some((x) => x.streamType === 0x86)) {
-        tsLine("     no stream_type 0x86 — this stream carries no in-band SCTE-35", "line-muted");
-      }
     }
+    reportInbandScte35(scans);
 
     // Per-segment integrity. These are the flags that indicate genuinely
     // damaged media, as opposed to the boundary question below.
@@ -715,7 +771,8 @@ async function runSegmentScan() {
       tsLine(" a reset to 0 is indistinguishable there. Re-scan for a clearer read.)", "line-muted");
     }
 
-    tsScanStatus.textContent = `Scanned ${uris.length} segments (${(totalBytes / 1048576).toFixed(1)} MB).`;
+    const cueCount = groupScte35Sections(scans).length;
+    tsScanStatus.textContent = `Scanned ${uris.length} segments (${(totalBytes / 1048576).toFixed(1)} MB)${cueCount ? `, ${cueCount} in-band SCTE-35 cue(s)` : ""}.`;
   } catch (e) {
     tsScanStatus.textContent = `Scan failed: ${e.message}`;
     tsScanStatus.className = "status warn";

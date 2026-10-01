@@ -18,7 +18,7 @@ Update this alongside `CONTEXT.md` as items land.
 2. ~~**Phase 1 — client-side only.**~~ **Done** (2026-08-16).
 3. ~~**Phase 2 — security hardening.**~~ **Done** (2026-08-16). Prerequisite for public deploy — satisfied, re-verified live in Phase 3's Lambda environment.
 4. ~~**Phase 3 — Amplify migration.**~~ **Done** (2026-08-18). Live at https://roadmap.d3qk02ponpvf7m.amplifyapp.com/. Unblocks everything server-side below — **not yet started on any of it**.
-5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). ccextractor and in-band SCTE-35 not started.
+5. **Phase 4 — server-dependent features.** In progress. VAST/VMAP validator ✅ done (2026-08-18). In-band SCTE-35 **on-demand detection built** (2026-10-01) — continuous monitoring still open. ccextractor not started.
 6. ~~**EPG drift detection.**~~ **Done** (2026-08-26; comparison basis reworked 2026-08-27 to check the *stream* rather than a second schedule; verified against production 2026-08-28). Credential question resolved — the REST `api_key` API is the approach, FTP is a separate pipeline and out of scope. Serialization verified against a live response. PDT anchoring landed 2026-09-10, fixing a boundary false alarm along with it. **One open item**: channel pairing can't be auto-verified in Gracenote mode. See its own section below.
 
 ---
@@ -113,9 +113,13 @@ Why the "needs PES demuxing" premise was wrong: **SCTE-35 in TS is section-carri
 
 Consequence: this can run **in the browser**, like the segment byte scan, via `analyzeSegment()`'s direct-fetch-with-proxy-fallback. A Lambda works too but buys nothing and costs egress. Phase 3 is *not* a prerequisite for this item.
 
-Not yet proven: multi-packet sections (the reassembler handles them, but only the single-packet path is tested — that's the normal case), behaviour against a real in-band stream (none available; the fixture is synthetic around a real payload), and cross-poll dedupe (a cue lives in the stream for its whole lifetime, so it needs the same media-sequence keying the manifest path already uses).
+~~Not yet proven: multi-packet sections, behaviour against a real in-band stream, and cross-poll dedupe.~~ Superseded by the BUILT note below (2026-10-01) — multi-packet is now tested; a real stream and cross-poll dedupe are still open.
 
-**Cost / sampling strategy — still the real open question, and the only one.** Measured against a live channel 2026-09-11 (727-byte playlist, 3.1MB 1080p segment, 217KB 144p segment, 6.006s segments, 4s poll), for 24h of *continuous* monitoring:
+**BUILT 2026-10-01 (on-demand).** `extractSections()` / `groupScte35Sections()` in `tsanalyze.js`, wired into the segment scan output. The roadmap's recommended first cut: it rides the existing Scan segments button, so the sampling question below doesn't block it. Now proven: multi-packet sections, pointer_field tails sharing a packet with the next section, duplicate packets, CC breaks mid-section (abandoned, not spliced), 0xFF stuffing, cue packets ahead of the PMT, and the JSON trip through the proxy fallback — 26 unit tests in `tests/unit/inband-scte35.test.js` plus one offline e2e test against `hls-media-inband-scte35.m3u8`. Repeats within a scan are collapsed by identical bytes (this is the within-scan half of the dedupe question; the cross-poll half only matters once something polls).
+
+Still not proven: **a real in-band stream** — every fixture is synthetic around a real payload. First thing to do when one turns up. Also found on the way: the captured `splice_insert_basic` payload fails CRC-32/MPEG-2 (see CONTEXT.md); CRC failures are therefore flagged in the output rather than dropped.
+
+**Cost / sampling strategy — still the real open question for *continuous* in-band monitoring.** Measured against a live channel 2026-09-11 (727-byte playlist, 3.1MB 1080p segment, 217KB 144p segment, 6.006s segments, 4s poll), for 24h of *continuous* monitoring:
 
 | | per 24h |
 |---|---|
@@ -136,7 +140,7 @@ Options, with the trade named:
 
 Two things that shrink the problem regardless: **pick the lowest-bandwidth variant** (217KB vs 3.1MB, a free 14x, and the SCTE-35 PID carries identical bytes in every rendition — cues aren't re-encoded per variant), and **fetch client-side** so there is no Lambda egress at all. With both, "surprise bill" becomes a bandwidth-politeness question about someone else's CDN rather than an AWS invoice.
 
-**UI design question, still open**: how to show in-band and out-of-band cues together without cluttering the Manifest Inspector — likely two clearly-labeled sub-columns or a toggle within the existing SCTE-35 cues box, reusing the glossary system rather than inventing new vocabulary. Needs a real design pass once detection works.
+**UI design question, still open**: how to show in-band and out-of-band cues together without cluttering the Manifest Inspector — likely two clearly-labeled sub-columns or a toggle within the existing SCTE-35 cues box, reusing the glossary system rather than inventing new vocabulary. Needs a real design pass now that detection works. For now in-band cues print in the segment scan output, not the cue log — they're on demand while the cue log is continuous, so mixing them would suggest the cue log is watching segments when it isn't.
 
 **Natural follow-on**: a reconciliation check flagging when in-band and out-of-band disagree (an event/PTS present in one but not the other) — a real packager bug class. PTS→wallclock (needed for a common time basis) is now built (Phase 1). Not committed to yet.
 

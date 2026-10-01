@@ -1,0 +1,10 @@
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:500
+#EXTINF:6.006,
+ts-seg-scte35-cue.ts
+#EXTINF:6.006,
+ts-seg-scte35-cue.ts
+#EXTINF:6.006,
+ts-seg-scte35.ts

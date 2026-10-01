@@ -87,8 +87,8 @@ export const GLOSSARY = {
   SCR: "Segmentation Content Reference identifier.",
 
   // delivery mechanism (not part of the splice_info_section format itself)
-  "out-of-band SCTE-35": "The splice_info_section payload is exposed in the manifest itself (e.g. HLS's EXT-X-DATERANGE/EXT-X-CUE-OUT/EXT-OATCLS-SCTE35 tags) rather than muxed into the media — just parse the playlist text, no demuxing required. This is the only kind of SCTE-35 this tool can see.",
-  "in-band SCTE-35": "The splice_info_section payload is embedded directly in the transport stream (an MPEG-TS private PID, or an emsg/timed-metadata box in fMP4) — a player has to demux the actual media segments to find it. This tool can't see in-band-only cues; a packager that mirrors the same cues out-of-band in the manifest is what makes them visible here.",
+  "out-of-band SCTE-35": "The splice_info_section payload is exposed in the manifest itself (e.g. HLS's EXT-X-DATERANGE/EXT-X-CUE-OUT/EXT-OATCLS-SCTE35 tags) rather than muxed into the media — just parse the playlist text, no demuxing required. This is what the SCTE-35 cue log watches continuously.",
+  "in-band SCTE-35": "The splice_info_section payload is embedded directly in the transport stream (an MPEG-TS private PID, or an emsg/timed-metadata box in fMP4) — a player has to demux the actual media segments to find it. This tool reads in-band cues from MPEG-TS segments on demand, via Scan segments — not continuously, since that means downloading every segment.",
 
   // HLS cue-related tags
   "EXT-X-CUE-OUT": "Marks the start of an ad break (cue-out) in the playlist — where insertion should begin.",

@@ -81,14 +81,14 @@
       <label for="ts-scan-count" class="inline">Segments</label>
       <input id="ts-scan-count" type="number" min="2" max="6" step="1" value="3">
       <span id="ts-scan-status" class="status"></span>
-      <span class="note">Downloads real segments (megabytes) — on demand only, never while polling.</span>
+      <span class="note">Downloads real segments (megabytes) — on demand only, never while polling. Also decodes any in-band SCTE-35 cues they carry.</span>
     </div>
     <pre id="ts-scan-output" class="log small" hidden></pre>
     <pre id="manifest-output" class="log"></pre>
     <div class="row">
       <label>SCTE-35 cues</label>
       <button id="scte-download-btn" class="secondary">Download SCTE log</button>
-      <span class="note">Detects <span class="glossary-term" data-term="out-of-band SCTE-35">out-of-band</span> SCTE-35 only (manifest tags) — not <span class="glossary-term" data-term="in-band SCTE-35">in-band</span> cues muxed into the media segments.</span>
+      <span class="note">Watches <span class="glossary-term" data-term="out-of-band SCTE-35">out-of-band</span> SCTE-35 (manifest tags). For <span class="glossary-term" data-term="in-band SCTE-35">in-band</span> cues muxed into the segments, use Scan segments above.</span>
       <span id="manifest-scte-status" class="status"></span>
     </div>
     <pre id="manifest-scte-output" class="log small"></pre>
