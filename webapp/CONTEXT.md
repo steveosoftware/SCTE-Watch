@@ -10,7 +10,7 @@ Pushed to `https://github.com/steveosoftware/SCTE-Watch.git`. Branches: `main` (
 
 **As of 2026-08-28 `staging` and `roadmap` are identical** (`df52d77`) — staging was 21 commits behind and fast-forwarded, no divergence, nothing lost. Working tree clean and fully pushed. `main` is untouched and still a single commit; nothing deploys from it.
 
-Latest work (2026-10-01, branch `inband-scte35`, not yet merged or pushed): **in-band SCTE-35 detection** — the segment scan now reassembles splice_info_sections from the PMT's `stream_type 0x86` PID and decodes them with the same `decodeScte35()` the manifest log uses. On demand only, via the existing Scan segments button. See ROADMAP.md Phase 4.
+Latest work (2026-10-01, merged to `roadmap` and pushed 2026-10-02; frontend-only — no Lambda redeploy needed): **in-band SCTE-35 detection** — the segment scan now reassembles splice_info_sections from the PMT's `stream_type 0x86` PID and decodes them with the same `decodeScte35()` the manifest log uses. On demand only, via the existing Scan segments button. See ROADMAP.md Phase 4.
 
 Before that (2026-09-16): the Manifest Inspector's variant log now accumulates every segment for the whole session instead of redrawing the ~10-segment live window, and `splitMediaPlaylist()` was added to `scte35.js` to key that on media sequence.
 
