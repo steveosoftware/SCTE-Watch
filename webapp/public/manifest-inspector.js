@@ -20,6 +20,7 @@ import {
   detectSequenceGap,
   compareMediaSequence,
   splitMediaPlaylist,
+  pickScanWindow,
   findDiscontinuities,
   isPlaylistStale,
   findVariantLadderAnomalies,
@@ -605,18 +606,21 @@ scteDownloadBtn.addEventListener("click", () => {
 // once per segment on an otherwise perfect stream. A JUMP has the shape of
 // real loss. Reporting them as one number sends people hunting for an
 // encoder fault that isn't there.
-function segmentUris(playlistText, playlistUrl) {
-  const out = [];
-  for (const raw of playlistText.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
+//
+// WHICH segments get fetched is pickScanWindow()'s call (scte35.js): an
+// in-band cue rides one segment just ahead of the break, so the window is
+// steered toward break tags, or the newest segments, rather than the oldest.
+function scanTargets(playlistText, playlistUrl, want) {
+  const segments = [];
+  for (const seg of splitMediaPlaylist(playlistText).segments) {
     try {
-      out.push(new URL(line, playlistUrl).href);
+      segments.push({ seq: seg.seq, lines: seg.lines, url: new URL(seg.lines[seg.lines.length - 1], playlistUrl).href });
     } catch {
       /* a relative URI we can't resolve is skipped rather than fatal */
     }
   }
-  return out;
+  const pick = pickScanWindow(segments, want);
+  return { ...pick, targets: segments.slice(pick.start, pick.end) };
 }
 
 function tsLine(text, cls) {
@@ -638,7 +642,7 @@ const pidHex = (pid) => `0x${pid.toString(16).padStart(4, "0")}`;
 // from ROADMAP.md: an out-of-band cue lives in a 727-byte playlist, an
 // in-band one in a multi-megabyte segment. Watching continuously is still
 // an open question; looking on demand is free until pressed.
-function reportInbandScte35(scans) {
+function reportInbandScte35(scans, plan) {
   const first = scans[0];
   if (!first.pmt) return;
   if (first.scte35 === undefined) {
@@ -658,10 +662,20 @@ function reportInbandScte35(scans) {
   for (const s of scans) incomplete += s.scte35?.incomplete ?? 0;
 
   if (!cues.length) {
-    tsLine(`   none in these ${scans.length} segments — the PID is declared, so cues will appear here during a break`, "line-muted");
+    tsLine(`   none in these ${scans.length} segments.`, "line-muted");
+    if (plan.rolledOff) {
+      tsLine("   The break tag is on the oldest listed segment, so the segment before it — where the", "line-muted");
+      tsLine("   in-band cue rides — has already left the playlist window. Too late to catch this one.", "line-muted");
+    } else if (plan.reason === "newest") {
+      tsLine("   No break in the playlist window right now. A cue is sent ONCE, in the segment just", "line-muted");
+      tsLine("   before a break — not repeated through it — so scan when CUE-OUT appears (within ~a minute).", "line-muted");
+    } else {
+      tsLine("   The segments leading into the break carried no cue — this break may be signaled", "line-muted");
+      tsLine("   out-of-band only, or the cue went out earlier than the scanned run.", "line-muted");
+    }
   }
   for (const c of cues) {
-    const where = c.segments.map((i) => i + 1).join(", ");
+    const where = c.segments.map((i) => `#${plan.targets[i].seq}`).join(", ");
     const repeats = c.occurrences > 1 ? `, sent ${c.occurrences}x` : "";
     tsLine(`   ** CUE ** in seg ${where}${repeats}`, "line-ok");
     const bytes = bytesFromHex(c.hex);
@@ -683,7 +697,9 @@ function reportInbandScte35(scans) {
 async function runSegmentScan() {
   if (!watchedPlaylistText || !watchedPlaylistUrl) return;
   const want = Math.max(2, Math.min(6, parseInt(tsScanCount.value, 10) || 3));
-  const uris = segmentUris(watchedPlaylistText, watchedPlaylistUrl).slice(0, want);
+  const plan = scanTargets(watchedPlaylistText, watchedPlaylistUrl, want);
+  const uris = plan.targets.map((t) => t.url);
+  const seqs = plan.targets.map((t) => t.seq);
   if (uris.length < 2) {
     tsScanStatus.textContent = "Need at least 2 segments in the playlist window.";
     tsScanStatus.className = "status warn";
@@ -709,12 +725,18 @@ async function runSegmentScan() {
     }
 
     const first = scans[0];
+    const why = {
+      "break-start tag": `ending on the break tag at #${plan.anchorSeq}, to include the lead-in segment before it`,
+      discontinuity: `ending on the discontinuity at #${plan.anchorSeq}, to include the segment before it`,
+      newest: "the newest in the window — no break tags listed right now",
+    }[plan.reason];
+    tsLine(`segments #${seqs[0]}–#${seqs[seqs.length - 1]}: ${why}`);
     tsLine(`${uris.length} segments, ${(totalBytes / 1048576).toFixed(1)} MB, fetched ${via === "proxy" ? "via the server proxy (CORS blocked a direct read)" : "directly from the browser"}`);
     if (first.pmt) {
       const streams = first.pmt.streams.map((x) => `0x${x.pid.toString(16).padStart(4, "0")} ${x.name}`);
       tsLine(`PMT: ${streams.join("   ")}`);
     }
-    reportInbandScte35(scans);
+    reportInbandScte35(scans, plan);
 
     // Per-segment integrity. These are the flags that indicate genuinely
     // damaged media, as opposed to the boundary question below.
@@ -740,7 +762,7 @@ async function runSegmentScan() {
     for (let i = 1; i < scans.length; i++) {
       for (const r of compareSegmentBoundary(scans[i - 1], scans[i])) {
         if (r.state === "absent") continue;
-        const label = `   seg ${i} -> ${i + 1}  PID 0x${r.pid.toString(16).padStart(4, "0")}${r.name ? ` (${r.name})` : ""}`;
+        const label = `   #${seqs[i - 1]} -> #${seqs[i]}  PID 0x${r.pid.toString(16).padStart(4, "0")}${r.name ? ` (${r.name})` : ""}`;
         if (r.state === "reset") {
           resets += 1;
           tsLine(`${label}  last CC ${r.lastCc}, expected ${r.expected}, got ${r.firstCc} — RESET`, "line-bad");

@@ -512,6 +512,50 @@ export function splitMediaPlaylist(text) {
   return { headerLines, segments, mediaSequence };
 }
 
+// Chooses which consecutive run of segments the segment scan should fetch.
+//
+// An in-band SCTE-35 cue is NOT repeated through a break the way
+// #EXT-X-CUE-OUT-CONT is: on a real channel (88840004, 2026-10-02) it rode
+// exactly one segment — the one BEFORE the segment the manifest tags with
+// CUE-OUT, sent ~5s ahead as a lead-in — and the break's segments carried
+// nothing on the cue PID. So which segments get scanned decides whether a
+// cue is found at all. Taking the oldest N, as the scan first did, leaves
+// that one segment in range for a few seconds per break.
+//
+// Preference, latest occurrence first:
+//   1. a break-start tag (CUE-OUT, OATCLS-SCTE35, a SCTE35-OUT DATERANGE) —
+//      the run ENDS on that segment, so the lead-in before it is included;
+//   2. a DISCONTINUITY, which brackets breaks on packagers that tag them;
+//   3. otherwise the NEWEST segments, since a cue for a break that's about
+//      to start sits in the newest segment before the manifest shows it.
+//
+// Consecutive on purpose: the continuity check compares each scanned
+// segment with the one before it, which means nothing across a gap.
+//
+// Returns {start, end (exclusive), reason, anchorSeq}. `rolledOff` is set
+// when the tag is on the OLDEST listed segment — the lead-in segment that
+// would carry the in-band cue has already left the window.
+const BREAK_START_RE = /^#(EXT-X-CUE-OUT(?!-CONT)|EXT-OATCLS-SCTE35|EXT-X-SCTE35\b|EXT-X-DATERANGE:.*SCTE35-OUT)/i;
+
+export function pickScanWindow(segments, want) {
+  const n = segments.length;
+  const count = Math.max(0, Math.min(want, n));
+  const lastIndexOf = (re) => {
+    for (let i = n - 1; i >= 0; i--) if (segments[i].lines.some((l) => re.test(l))) return i;
+    return -1;
+  };
+  const endingAt = (k, reason) => {
+    const end = Math.min(n, Math.max(k + 1, count));
+    return { start: end - count, end, reason, anchorSeq: segments[k].seq, rolledOff: k === 0 };
+  };
+
+  const cue = lastIndexOf(BREAK_START_RE);
+  if (cue >= 0) return endingAt(cue, "break-start tag");
+  const disc = lastIndexOf(/^#EXT-X-DISCONTINUITY$/i);
+  if (disc >= 0) return endingAt(disc, "discontinuity");
+  return { start: n - count, end: n, reason: "newest", anchorSeq: null, rolledOff: false };
+}
+
 export function detectSequenceGap(prevText, currText) {
   if (prevText === null || prevText === undefined) return null;
   const r = compareMediaSequence(prevText, currText);

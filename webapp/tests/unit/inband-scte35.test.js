@@ -11,7 +11,7 @@ import {
   crc32Mpeg2,
   TS_PACKET_SIZE,
 } from "../../public/tsanalyze.js";
-import { decodeScte35, bytesFromHex } from "../../public/scte35.js";
+import { decodeScte35, bytesFromHex, splitMediaPlaylist, pickScanWindow } from "../../public/scte35.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(path.join(__dirname, "../fixtures", n));
@@ -328,5 +328,70 @@ describe("real capture — channel 88840004, 2026-10-02", () => {
     // is the check.
     const [s] = analyzeTsSegment(real).scte35.sections;
     assert.equal(Buffer.from(s.hex, "hex").toString("base64"), manifestTag);
+  });
+});
+
+describe("pickScanWindow — steering the scan toward where an in-band cue rides", () => {
+  // Shaped on channel 88840004's 144p playlist around the 2026-10-02 break:
+  // the in-band cue rode 1705243 (DISCONTINUITY only); the manifest's
+  // CUE-OUT landed on 1705244; the break's segments carried no cue at all.
+  const playlist = (segs, mediaSeq = 1705240) =>
+    splitMediaPlaylist(["#EXTM3U", "#EXT-X-TARGETDURATION:7", `#EXT-X-MEDIA-SEQUENCE:${mediaSeq}`, ...segs.flatMap((tags, i) => [...tags, "#EXTINF:6.005,", `0_${mediaSeq + i}.ts`])].join("\n")).segments;
+  const CUE = ["#EXT-X-DISCONTINUITY", "#EXT-OATCLS-SCTE35:/DAlAAAAAAAAAP/wFAUAAAAaf+/+jiji6P4ApMuAAAEAAAAA2rwRiA==", "#EXT-X-CUE-OUT:DURATION=120"];
+  const CONT = (t) => [`#EXT-X-CUE-OUT-CONT:ElapsedTime=${t},Duration=120`];
+  const seqsOf = (segs, w) => segs.slice(w.start, w.end).map((s) => s.seq);
+
+  test("no tags: the NEWEST segments, not the oldest", () => {
+    // A cue for a break about to start sits in the newest segment before
+    // the manifest shows anything. The oldest are the least likely place.
+    const segs = playlist([[], [], [], [], [], [], [], [], [], []]);
+    const w = pickScanWindow(segs, 3);
+    assert.equal(w.reason, "newest");
+    assert.deepEqual(seqsOf(segs, w), [1705247, 1705248, 1705249]);
+  });
+
+  test("a CUE-OUT in the window: the run ends on it, so the lead-in segment is included", () => {
+    const segs = playlist([[], [], [], ["#EXT-X-DISCONTINUITY"], CUE, CONT(5), CONT(10), CONT(15), CONT(20), CONT(25)]);
+    const w = pickScanWindow(segs, 3);
+    assert.equal(w.reason, "break-start tag");
+    assert.equal(w.anchorSeq, 1705244);
+    assert.deepEqual(seqsOf(segs, w), [1705242, 1705243, 1705244], "1705243 is where the real cue was");
+  });
+
+  test("CUE-OUT-CONT is not mistaken for a break start", () => {
+    const segs = playlist([CONT(5), CONT(10), CONT(15), CONT(20)]);
+    assert.equal(pickScanWindow(segs, 2).reason, "newest");
+  });
+
+  test("a SCTE35-OUT DATERANGE counts as a break start", () => {
+    const segs = playlist([[], ['#EXT-X-DATERANGE:ID="1",START-DATE="2026-10-02T15:21:56Z",SCTE35-OUT=0xFC30'], [], [], []]);
+    const w = pickScanWindow(segs, 2);
+    assert.deepEqual(seqsOf(segs, w), [1705240, 1705241]);
+  });
+
+  test("the latest break wins when the window holds two", () => {
+    const segs = playlist([CUE, [], [], [], CUE, [], []]);
+    assert.equal(pickScanWindow(segs, 2).anchorSeq, 1705244);
+  });
+
+  test("a lone DISCONTINUITY is the fallback anchor", () => {
+    const segs = playlist([[], [], ["#EXT-X-DISCONTINUITY"], [], [], []]);
+    const w = pickScanWindow(segs, 3);
+    assert.equal(w.reason, "discontinuity");
+    assert.deepEqual(seqsOf(segs, w), [1705240, 1705241, 1705242]);
+  });
+
+  test("a tag on the oldest segment: flagged rolledOff — the lead-in has left the window", () => {
+    const segs = playlist([CUE, CONT(5), CONT(10), CONT(15)]);
+    const w = pickScanWindow(segs, 3);
+    assert.equal(w.rolledOff, true);
+    assert.deepEqual(seqsOf(segs, w), [1705240, 1705241, 1705242], "still a full run, extended forward");
+  });
+
+  test("always consecutive and never larger than asked or than the window", () => {
+    const segs = playlist([[], CUE, []]);
+    const w = pickScanWindow(segs, 6);
+    assert.equal(w.end - w.start, 3);
+    assert.deepEqual(pickScanWindow([], 3), { start: 0, end: 0, reason: "newest", anchorSeq: null, rolledOff: false });
   });
 });

@@ -744,7 +744,7 @@ describe("offline / deterministic", () => {
     assert.match(status, /1 in-band SCTE-35 cue/);
     const out = await page.textContent("#ts-scan-output");
     assert.match(out, /in-band SCTE-35 \(PID 0x01f0\)/);
-    assert.match(out, /\*\* CUE \*\* in seg 1, 2, sent 2x/, "two copies of one cue must read as one cue, not two breaks");
+    assert.match(out, /\*\* CUE \*\* in seg #500, #501, sent 2x/, "two copies of one cue must read as one cue, not two breaks");
     assert.match(out, /splice_insert.*event=0x4800008F/);
     assert.match(out, /splice at  : PTS 21514\.559s/);
     assert.ok(!/CRC_32 does not verify/.test(out), "this fixture's CRC is valid");
