@@ -292,3 +292,41 @@ describe("groupScte35Sections", () => {
     assert.deepEqual(groupScte35Sections([silent, analyzeTsSegment(fx("ts-seg-a.ts"))]), []);
   });
 });
+
+describe("real capture — channel 88840004, 2026-10-02", () => {
+  // ts-seg-inband-real.ts is segment 0_0001705243.ts from the 144p variant,
+  // trimmed to its PAT, PMT and SCTE-35 packets — unmodified, in original
+  // order; the audio/video packets are dropped. The first real in-band cue
+  // this tool has seen. The same channel's manifest carried the identical
+  // bytes one segment LATER, on #EXT-OATCLS-SCTE35 above the segment where
+  // the splice lands (video PTS 26500.492 — the splice is 26500.491).
+  const real = fx("ts-seg-inband-real.ts");
+  const manifestTag = "/DAlAAAAAAAAAP/wFAUAAAAaf+/+jiji6P4ApMuAAAEAAAAA2rwRiA==";
+
+  test("finds the splice_insert on the PMT's PID 0x0258, sent twice", () => {
+    const r = analyzeTsSegment(real);
+    assert.deepEqual(r.scte35.pids, [0x0258]);
+    assert.equal(r.scte35.sections.length, 2);
+    assert.equal(r.scte35.incomplete, 0);
+    const [g] = groupScte35Sections([r]);
+    assert.equal(g.occurrences, 2);
+    const d = decodeHex(g.hex);
+    assert.equal(d.splice_command, "splice_insert");
+    assert.equal(d.splice_event_id, "0x0000001A");
+    assert.equal(d.out_of_network, true);
+    assert.equal(d.pts_time_s, "26500.491s");
+    assert.equal(d.break_duration_s, "120.000s");
+  });
+
+  test("its CRC verifies — a real packager's CRC, unlike the old fixture's", () => {
+    assert.ok(analyzeTsSegment(real).scte35.sections.every((s) => s.crcOk));
+  });
+
+  test("in-band and out-of-band carry byte-identical cues", () => {
+    // What makes an in-band/out-of-band reconciliation check meaningful:
+    // on a healthy packager they are the same bytes, so a straight compare
+    // is the check.
+    const [s] = analyzeTsSegment(real).scte35.sections;
+    assert.equal(Buffer.from(s.hex, "hex").toString("base64"), manifestTag);
+  });
+});
