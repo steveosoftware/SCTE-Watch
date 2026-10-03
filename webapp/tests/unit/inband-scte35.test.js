@@ -11,7 +11,16 @@ import {
   crc32Mpeg2,
   TS_PACKET_SIZE,
 } from "../../public/tsanalyze.js";
-import { decodeScte35, bytesFromHex, splitMediaPlaylist, pickScanWindow } from "../../public/scte35.js";
+import {
+  decodeScte35,
+  bytesFromHex,
+  splitMediaPlaylist,
+  pickScanWindow,
+  findBreakStarts,
+  scanWindowEndingAt,
+  manifestCuePayloadsHex,
+  compareInbandToManifest,
+} from "../../public/scte35.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(path.join(__dirname, "../fixtures", n));
@@ -393,5 +402,58 @@ describe("pickScanWindow — steering the scan toward where an in-band cue rides
     const w = pickScanWindow(segs, 6);
     assert.equal(w.end - w.start, 3);
     assert.deepEqual(pickScanWindow([], 3), { start: 0, end: 0, reason: "newest", anchorSeq: null, rolledOff: false });
+  });
+});
+
+describe("auto in-band check helpers", () => {
+  const segsOf = (text) => splitMediaPlaylist(text).segments;
+  const playlist = fx("hls-media-inband-cueout.m3u8").toString();
+
+  test("findBreakStarts finds the CUE-OUT segment and ignores CUE-OUT-CONT", () => {
+    const segs = segsOf(playlist + "#EXT-X-CUE-OUT-CONT:ElapsedTime=5,Duration=60\n#EXTINF:6,\nx.ts\n");
+    assert.deepEqual(findBreakStarts(segs).map((i) => segs[i].seq), [602]);
+  });
+
+  test("scanWindowEndingAt targets the lead-in before a break, not the latest break", () => {
+    // The auto check handles each break by its own index, so a window with
+    // two breaks still scans the right segments for each.
+    const segs = segsOf(playlist);
+    const w = scanWindowEndingAt(segs, 2, 3);
+    assert.deepEqual(segs.slice(w.start, w.end).map((s) => s.seq), [600, 601, 602]);
+    assert.equal(w.rolledOff, false);
+    assert.equal(scanWindowEndingAt(segs, 0, 3).rolledOff, true);
+  });
+
+  test("manifestCuePayloadsHex reads the break segment's OATCLS payload as hex", () => {
+    const segs = segsOf(playlist);
+    assert.deepEqual(manifestCuePayloadsHex(segs[2]), [cue.toString("hex")]);
+    assert.deepEqual(manifestCuePayloadsHex(segs[0]), []);
+  });
+
+  test("a bare CUE-OUT:DURATION carries no payload", () => {
+    const [seg] = segsOf("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-CUE-OUT:DURATION=120\n#EXTINF:6,\na.ts\n");
+    assert.deepEqual(manifestCuePayloadsHex(seg), []);
+  });
+
+  test("the same payload on two tags is one payload", () => {
+    const b64 = cue.toString("base64");
+    const [seg] = segsOf(`#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-OATCLS-SCTE35:${b64}\n#EXT-X-CUE-OUT:DURATION=60,SCTE35=${b64}\n#EXTINF:6,\na.ts\n`);
+    assert.equal(manifestCuePayloadsHex(seg).length, 1);
+  });
+
+  test("the fixture's manifest and in-band cues reconcile as a match end to end", () => {
+    const segs = segsOf(playlist);
+    const scans = ["ts-seg-scte35.ts", "ts-seg-scte35-cue.ts", "ts-seg-scte35.ts"].map((f) => analyzeTsSegment(fx(f)));
+    const inband = groupScte35Sections(scans).map((c) => c.hex);
+    assert.equal(compareInbandToManifest(manifestCuePayloadsHex(segs[2]), inband), "match");
+  });
+
+  test("compareInbandToManifest covers every verdict", () => {
+    assert.equal(compareInbandToManifest(["aa"], ["aa"]), "match");
+    assert.equal(compareInbandToManifest(["aa"], ["bb"]), "mismatch");
+    assert.equal(compareInbandToManifest(["aa"], []), "manifest-only");
+    assert.equal(compareInbandToManifest([], ["aa"]), "no-payload");
+    assert.equal(compareInbandToManifest([], []), "none");
+    assert.equal(compareInbandToManifest(["aa"], ["bb", "aa"]), "match", "any identical pair is a match");
   });
 });

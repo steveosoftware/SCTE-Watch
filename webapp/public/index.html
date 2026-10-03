@@ -88,7 +88,8 @@
     <div class="row">
       <label>SCTE-35 cues</label>
       <button id="scte-download-btn" class="secondary">Download SCTE log</button>
-      <span class="note">Watches <span class="glossary-term" data-term="out-of-band SCTE-35">out-of-band</span> SCTE-35 (manifest tags). For <span class="glossary-term" data-term="in-band SCTE-35">in-band</span> cues muxed into the segments, use Scan segments above.</span>
+      <label class="checkbox" for="inband-auto"><input type="checkbox" id="inband-auto"> Read <span class="glossary-term" data-term="in-band SCTE-35">in-band</span> cues at each CUE-OUT</label>
+      <span class="note">Logs <span class="glossary-term" data-term="out-of-band SCTE-35">out-of-band</span> cues (manifest tags). Ticked, each new break also fetches the ~3 segments leading into it (about 0.3 MB at the lowest variant) and checks the cue in them against the manifest's.</span>
       <span id="manifest-scte-status" class="status"></span>
     </div>
     <pre id="manifest-scte-output" class="log small"></pre>

@@ -537,23 +537,67 @@ export function splitMediaPlaylist(text) {
 // would carry the in-band cue has already left the window.
 const BREAK_START_RE = /^#(EXT-X-CUE-OUT(?!-CONT)|EXT-OATCLS-SCTE35|EXT-X-SCTE35\b|EXT-X-DATERANGE:.*SCTE35-OUT)/i;
 
+// Indices of segments carrying a break-start tag, oldest first.
+export function findBreakStarts(segments) {
+  const out = [];
+  segments.forEach((seg, i) => {
+    if (seg.lines.some((l) => BREAK_START_RE.test(l))) out.push(i);
+  });
+  return out;
+}
+
+// A consecutive run of up to `want` segments ending on index k (inclusive)
+// — extended forward when there aren't enough before k, so it's always as
+// full as the window allows.
+export function scanWindowEndingAt(segments, k, want) {
+  const n = segments.length;
+  const count = Math.max(0, Math.min(want, n));
+  const end = Math.min(n, Math.max(k + 1, count));
+  return { start: end - count, end, anchorSeq: segments[k].seq, rolledOff: k === 0 };
+}
+
 export function pickScanWindow(segments, want) {
   const n = segments.length;
   const count = Math.max(0, Math.min(want, n));
-  const lastIndexOf = (re) => {
-    for (let i = n - 1; i >= 0; i--) if (segments[i].lines.some((l) => re.test(l))) return i;
-    return -1;
-  };
-  const endingAt = (k, reason) => {
-    const end = Math.min(n, Math.max(k + 1, count));
-    return { start: end - count, end, reason, anchorSeq: segments[k].seq, rolledOff: k === 0 };
-  };
-
-  const cue = lastIndexOf(BREAK_START_RE);
-  if (cue >= 0) return endingAt(cue, "break-start tag");
-  const disc = lastIndexOf(/^#EXT-X-DISCONTINUITY$/i);
-  if (disc >= 0) return endingAt(disc, "discontinuity");
+  const breaks = findBreakStarts(segments);
+  if (breaks.length) return { ...scanWindowEndingAt(segments, breaks[breaks.length - 1], want), reason: "break-start tag" };
+  for (let i = n - 1; i >= 0; i--) {
+    if (segments[i].lines.some((l) => /^#EXT-X-DISCONTINUITY$/i.test(l))) {
+      return { ...scanWindowEndingAt(segments, i, want), reason: "discontinuity" };
+    }
+  }
   return { start: n - count, end: n, reason: "newest", anchorSeq: null, rolledOff: false };
+}
+
+// The SCTE-35 payloads a break-start segment's manifest tags carry, as hex
+// — the form tsanalyze.js reports in-band sections in, so the two compare
+// directly. A bare #EXT-X-CUE-OUT:DURATION=120 carries none.
+export function manifestCuePayloadsHex(segment) {
+  const out = [];
+  for (const line of segment.lines) {
+    if (!/^#(EXT-X-CUE-OUT(?!-CONT)|EXT-OATCLS-SCTE35|EXT-X-SCTE35\b|EXT-X-DATERANGE)/i.test(line)) continue;
+    const bytes = extractPayloadFromTagLine(line);
+    if (!bytes) continue;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    if (!out.includes(hex)) out.push(hex);
+  }
+  return out;
+}
+
+// Verdict for one break: does the cue in the segments match the cue in the
+// manifest? On a healthy packager they are the SAME bytes (verified on
+// channel 88840004), so a straight compare is the check — no decoding or
+// field-by-field tolerance needed.
+//
+//   match            — an in-band section is byte-identical to a manifest payload
+//   mismatch         — both present, no byte-identical pair
+//   manifest-only    — the manifest signaled a cue; the segments leading in carried none
+//   no-payload       — in-band cue found, but the manifest tag has no payload to compare
+//   none             — neither (a bare CUE-OUT and silent segments)
+export function compareInbandToManifest(manifestHexes, inbandHexes) {
+  if (!inbandHexes.length) return manifestHexes.length ? "manifest-only" : "none";
+  if (!manifestHexes.length) return "no-payload";
+  return inbandHexes.some((h) => manifestHexes.includes(h)) ? "match" : "mismatch";
 }
 
 export function detectSequenceGap(prevText, currText) {

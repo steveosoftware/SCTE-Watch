@@ -744,13 +744,52 @@ describe("offline / deterministic", () => {
     assert.match(status, /1 in-band SCTE-35 cue/);
     const out = await page.textContent("#ts-scan-output");
     assert.match(out, /in-band SCTE-35 \(PID 0x01f0\)/);
-    assert.match(out, /\*\* CUE \*\* in seg #500, #501, sent 2x/, "two copies of one cue must read as one cue, not two breaks");
+    assert.match(out, /\*\* IN-BAND CUE \*\* in seg #500, #501, sent 2x/, "two copies of one cue must read as one cue, not two breaks");
     assert.match(out, /splice_insert.*event=0x4800008F/);
     assert.match(out, /splice at  : PTS 21514\.559s/);
     assert.ok(!/CRC_32 does not verify/.test(out), "this fixture's CRC is valid");
     // The decoded command is glossary-linked, same as the manifest cue log.
     assert.ok(await page.$('#ts-scan-output .glossary-term[data-term="splice_insert"]'));
 
+    await page.close();
+  });
+
+  test("auto in-band check: a CUE-OUT triggers a scan, logged in the cue log against the manifest's cue", async () => {
+    // #602 carries CUE-OUT + OATCLS; #601 before it carries the same cue
+    // in-band. Ticking the box must fetch the lead-in and report a match.
+    const { page } = await newPage();
+    await page.goto(BASE_URL);
+    await page.check("#inband-auto");
+    await page.fill("#tester-url", `http://127.0.0.1:${FIXTURE_SERVER_PORT}/hls-media-inband-cueout.m3u8`);
+    await page.selectOption("#tester-format", "hls");
+    await page.click("#tester-load");
+
+    await page.waitForFunction(() => /identical to the manifest|failed|DIFFERENT|manifest-only/.test(document.getElementById("manifest-scte-output").textContent), { timeout: 15000 });
+    const log = await page.textContent("#manifest-scte-output");
+    assert.match(log, /SEQ=602  in-band check for this break \(scanned #600–#602/);
+    assert.match(log, /\*\* IN-BAND CUE \*\* in seg #601/);
+    assert.match(log, /✓ identical to the manifest's cue/);
+    // Once per break, however many polls it stays in the window.
+    await page.waitForTimeout(2500);
+    const again = await page.textContent("#manifest-scte-output");
+    assert.equal((again.match(/in-band check for this break/g) || []).length, 1);
+    await page.close();
+  });
+
+  test("auto in-band check is OFF by default — no segments are fetched", async () => {
+    const { page } = await newPage();
+    const segmentRequests = [];
+    page.on("request", (r) => { if (/\.ts(\?|$)/.test(r.url()) || /segment-scan/.test(r.url())) segmentRequests.push(r.url()); });
+    await page.goto(BASE_URL);
+    assert.equal(await page.isChecked("#inband-auto"), false);
+    // Drive the inspector directly rather than via the tester, so hls.js
+    // playback (which fetches segments itself) doesn't muddy the count.
+    await page.evaluate((u) => document.dispatchEvent(new CustomEvent("tester:load", { detail: { url: u, format: "hls" } })),
+      `http://127.0.0.1:${FIXTURE_SERVER_PORT}/hls-media-inband-cueout.m3u8`);
+    await page.waitForFunction(() => /CUE MARKERS FOUND/.test(document.getElementById("manifest-scte-output").textContent), { timeout: 10000 });
+    await page.waitForTimeout(1500);
+    assert.ok(!/in-band check/.test(await page.textContent("#manifest-scte-output")));
+    assert.deepEqual(segmentRequests, []);
     await page.close();
   });
 

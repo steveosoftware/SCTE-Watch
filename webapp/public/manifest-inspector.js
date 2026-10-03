@@ -21,6 +21,10 @@ import {
   compareMediaSequence,
   splitMediaPlaylist,
   pickScanWindow,
+  findBreakStarts,
+  scanWindowEndingAt,
+  manifestCuePayloadsHex,
+  compareInbandToManifest,
   findDiscontinuities,
   isPlaylistStale,
   findVariantLadderAnomalies,
@@ -49,6 +53,7 @@ const tsScanBtn = $("ts-scan-btn");
 const tsScanCount = $("ts-scan-count");
 const tsScanStatus = $("ts-scan-status");
 const tsScanOutput = $("ts-scan-output");
+const inbandAutoEl = $("inband-auto");
 
 let pollTimer = null;
 let variants = [];
@@ -66,6 +71,13 @@ let loggedSegmentCount = 0;
 // may have been a master.
 let watchedPlaylistUrl = null;
 let watchedPlaylistText = null;
+// Auto in-band check state, per watched target. `inbandChecked` holds the
+// media sequence of every break-start segment already handled, so a break
+// is fetched once however many polls it stays in the window. The
+// generation counter lets a scan still in flight after a dropdown switch
+// notice and drop its result rather than log it against the wrong variant.
+let inbandChecked = new Set();
+let inbandGen = 0;
 let ladderAnomalies = []; // set once at master load; surfaced on every health update since it's a load-time, not per-poll, finding
 
 function ts() {
@@ -450,6 +462,7 @@ function watch(url, stillLive) {
       const { text, headers } = await fetchViaProxy(url);
       render(text);
       watchedPlaylistText = text;
+      autoInbandCheck(text); // not awaited — fetching segments mustn't hold up the poll
       // Enable the segment scan only for HLS media playlists — it needs
       // #EXTINF segment URIs to resolve, which a master doesn't have.
       tsScanBtn.disabled = !(currentFormat === "hls" && /#EXTINF/.test(text));
@@ -481,6 +494,8 @@ function watchTarget(url, stillLive) {
   tsScanBtn.disabled = true;
   lastSeq = null;
   lastDashEventsKey = null;
+  inbandChecked = new Set();
+  inbandGen += 1;
   scteOutputEl.textContent = "";
   scteStatusEl.textContent = "";
   watch(url, stillLive);
@@ -675,22 +690,111 @@ function reportInbandScte35(scans, plan) {
     }
   }
   for (const c of cues) {
-    const where = c.segments.map((i) => `#${plan.targets[i].seq}`).join(", ");
-    const repeats = c.occurrences > 1 ? `, sent ${c.occurrences}x` : "";
-    tsLine(`   ** CUE ** in seg ${where}${repeats}`, "line-ok");
-    const bytes = bytesFromHex(c.hex);
-    const info = decodeScte35(bytes);
-    for (const dline of formatDecoded(info, "     ")) tsHtml(dline);
-    if (info.pts_time_s) tsLine(`       splice at  : PTS ${info.pts_time_s}`);
-    tsLine(`       base64     : ${btoa(String.fromCharCode(...bytes))}`, "line-muted");
-    if (!c.crcOk) {
-      // Flagged, not dropped: a packager that writes bad CRCs still means
-      // the cue was sent, and a strict player may be ignoring it.
-      tsLine("       CRC_32 does not verify — a strict decoder would discard this cue", "line-bad");
-    }
+    for (const h of inbandCueHtml(c, (i) => plan.targets[i].seq, "   ")) tsHtml(h);
   }
   if (incomplete) {
     tsLine(`   (${incomplete} section(s) cut off by a segment edge or lost packets — not decodable from this scan)`, "line-muted");
+  }
+}
+
+const span = (cls, text) => `<span class="${cls}">${escapeHtml(text)}</span>`;
+
+// One in-band cue, decoded — shared by the segment scan and the cue log so
+// the two read the same. `seqOf` maps a scan index to its media sequence.
+function inbandCueHtml(c, seqOf, indent) {
+  const where = c.segments.map((i) => `#${seqOf(i)}`).join(", ");
+  const repeats = c.occurrences > 1 ? `, sent ${c.occurrences}x` : "";
+  const bytes = bytesFromHex(c.hex);
+  const info = decodeScte35(bytes);
+  const out = [span("line-ok", `${indent}** IN-BAND CUE ** in seg ${where}${repeats}`)];
+  out.push(...formatDecoded(info, `${indent}  `));
+  if (info.pts_time_s) out.push(escapeHtml(`${indent}    splice at  : PTS ${info.pts_time_s}`));
+  out.push(span("line-muted", `${indent}    base64     : ${btoa(String.fromCharCode(...bytes))}`));
+  if (!c.crcOk) {
+    // Flagged, not dropped: a packager that writes bad CRCs still means
+    // the cue was sent, and a strict player may be ignoring it.
+    out.push(span("line-bad", `${indent}    CRC_32 does not verify — a strict decoder would discard this cue`));
+  }
+  return out;
+}
+
+const INBAND_VERDICT = {
+  match: ["line-ok", "✓ identical to the manifest's cue"],
+  mismatch: ["line-bad", "⚠ DIFFERENT bytes from the manifest's cue — in-band and out-of-band disagree"],
+  "manifest-only": ["line-bad", "⚠ manifest-only — no in-band cue in the segments leading into this break"],
+  "no-payload": ["line-muted", "(the manifest tag carries no SCTE-35 payload, so there's nothing to compare)"],
+  none: ["line-muted", "no in-band cue in the segments leading into this break, and no manifest payload either"],
+};
+
+// The opt-in automatic check: on each NEW break-start tag in the polled
+// playlist, fetch the segments leading into it and log the in-band cue
+// alongside the manifest's.
+//
+// Triggered by the manifest, so it costs ~3 segments per break rather than
+// every segment — the user's call (2026-10-03), weighed against
+// continuous scanning. The trade: a break signaled ONLY in-band (no
+// manifest tag at all) never triggers it. Off by default for the same
+// reason the Scan segments button is a button.
+//
+// Window: 3 segments ending ON the tagged segment. On channel 88840004 the
+// in-band cue rode the segment immediately before it, sent ~5s ahead; the
+// third segment is margin for a packager with a longer lead-in.
+async function autoInbandCheck(text) {
+  if (!inbandAutoEl.checked || currentFormat !== "hls" || !/#EXTINF/.test(text)) return;
+  const gen = inbandGen;
+  const playlistUrl = watchedPlaylistUrl;
+  const segments = [];
+  for (const seg of splitMediaPlaylist(text).segments) {
+    try {
+      segments.push({ seq: seg.seq, lines: seg.lines, url: new URL(seg.lines[seg.lines.length - 1], playlistUrl).href });
+    } catch {
+      /* unresolvable URI — skipped, as in the manual scan */
+    }
+  }
+
+  for (const k of findBreakStarts(segments)) {
+    const seq = segments[k].seq;
+    if (inbandChecked.has(seq)) continue;
+    inbandChecked.add(seq); // before any await, so an overlapping poll can't start the same break twice
+    const head = `[${ts()}] SEQ=${seq}  in-band check for this break`;
+
+    const w = scanWindowEndingAt(segments, k, 3);
+    if (w.rolledOff) {
+      appendScteHtml(escapeHtml(head));
+      appendScteHtml(span("line-muted", "  not checked — the tag is on the oldest listed segment, so the lead-in carrying the in-band cue has already left the window"));
+      appendScteHtml(escapeHtml("---"));
+      continue;
+    }
+
+    const targets = segments.slice(w.start, w.end);
+    try {
+      const scans = [];
+      let bytes = 0;
+      for (const t of targets) {
+        const r = await analyzeSegment(t.url, analyzeTsSegment);
+        scans.push(r.analysis);
+        bytes += r.bytes || 0;
+      }
+      if (gen !== inbandGen) return; // the watched target changed mid-scan
+
+      appendScteHtml(escapeHtml(`${head} (scanned #${targets[0].seq}–#${targets[targets.length - 1].seq}, ${(bytes / 1048576).toFixed(2)} MB)`));
+      const declared = scans.find((x) => x.pmt)?.scte35;
+      if (declared === null) {
+        appendScteHtml(span("line-muted", "  this stream's PMT declares no SCTE-35 PID — it carries no in-band cues to compare"));
+      } else {
+        const cues = groupScte35Sections(scans);
+        for (const c of cues) for (const h of inbandCueHtml(c, (i) => targets[i].seq, "  ")) appendScteHtml(h);
+        const verdict = compareInbandToManifest(manifestCuePayloadsHex(segments[k]), cues.map((c) => c.hex));
+        const [cls, msg] = INBAND_VERDICT[verdict];
+        appendScteHtml(span(cls, `  ${msg}`));
+      }
+      appendScteHtml(escapeHtml("---"));
+    } catch (e) {
+      if (gen !== inbandGen) return;
+      appendScteHtml(escapeHtml(head));
+      appendScteHtml(span("line-bad", `  segment fetch failed: ${e.message}`));
+      appendScteHtml(escapeHtml("---"));
+    }
   }
 }
 
